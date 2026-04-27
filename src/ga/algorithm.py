@@ -12,7 +12,9 @@ from . import evaluation, logs, selection
 Individual = list[population.Triangle]
 FitnessFunction = evaluation.FitnessFunction
 CrossoverFunction = Callable[[Individual, Individual, float], Individual]
-MutationFunction = Callable[[Individual, float, int, int], Individual]
+MutationFunction = Callable[
+    [Individual, float, int, int, population.AlphaRange], Individual
+]
 OperatorFunction = CrossoverFunction | MutationFunction
 EvaluationBackend = evaluation.EvaluationBackend
 
@@ -62,6 +64,9 @@ class GeneticAlgorithm:
         evaluation_backend: EvaluationBackend = "sequential",
         n_jobs: int | None = None,
         chunksize: int | None = None,
+        triangle_alpha_range: population.AlphaRange = (
+            population.TRIANGLE_ALPHA_RANGE
+        ),
     ) -> None:
         """
         Configures a genetic image approximation run.
@@ -81,10 +86,11 @@ class GeneticAlgorithm:
             evaluation_backend: ``sequential``, ``thread``, or ``process``.
             n_jobs: Optional worker count for thread or process evaluation.
             chunksize: Optional process-pool batch size.
+            triangle_alpha_range: Inclusive triangle alpha range from 0 to 255.
 
         Raises:
-            ValueError: If dimensions, rates, backend, worker settings, or
-                process-mode fitness pickling requirements are invalid.
+            ValueError: If dimensions, rates, alpha range, backend, worker
+                settings, or process-mode fitness pickling requirements are invalid.
         """
 
         if target.ndim != 3 or target.shape[2] != 3:
@@ -122,6 +128,9 @@ class GeneticAlgorithm:
         self.evaluation_backend = normalized_backend
         self.n_jobs = n_jobs
         self.chunksize = chunksize
+        self.triangle_alpha_range = population.validate_triangle_alpha_range(
+            triangle_alpha_range
+        )
         self.image_height, self.image_width = self.target.shape[:2]
 
         self.population: list[Individual] = []
@@ -137,6 +146,7 @@ class GeneticAlgorithm:
             population_size=self.population_size,
             image_width=self.image_width,
             image_height=self.image_height,
+            triangle_alpha_range=self.triangle_alpha_range,
         )
         self.best_individual = None
         self.best_fitness = float("inf")
@@ -252,6 +262,7 @@ class GeneticAlgorithm:
             self.mutation_rate,
             self.image_width,
             self.image_height,
+            self.triangle_alpha_range,
         )
 
     def run(self) -> tuple[float, list[float]]:

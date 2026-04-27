@@ -9,8 +9,8 @@ Internally, `src/ga/algorithm.py` keeps the GA lifecycle focused on population s
 ## Notebook Recommended Usage
 
 ```python
-from src import fitness, load_image
-from src.ga import GeneticAlgorithm
+from src import load_image
+from src.ga import GeneticAlgorithm, fitness
 
 image_path = project_root / "images/girl_pearl_earing.png"
 target_image = load_image.load_target_image(image_path)
@@ -52,6 +52,7 @@ ga = GeneticAlgorithm(
     evaluation_backend="sequential",
     n_jobs=None,
     chunksize=None,
+    triangle_alpha_range=(20, 255),
 )
 ```
 
@@ -67,10 +68,38 @@ ga = GeneticAlgorithm(
 - `selection_type: str = "tournament"`: Parent selection strategy. Valid values are `"tournament"`, `"ranking"`, and `"roulette"`.
 - `logs: bool = False`: When `True`, stores run metadata in `ga.run_logs` after `run()`.
 - `crossover_function: Callable | None = None`: Optional callback with signature `fn(parent1, parent2, crossover_rate) -> individual`.
-- `mutation_function: Callable | None = None`: Optional callback with signature `fn(individual, mutation_rate, image_width, image_height) -> individual`.
+- `mutation_function: Callable | None = None`: Optional callback with signature `fn(individual, mutation_rate, image_width, image_height, triangle_alpha_range) -> individual`.
 - `evaluation_backend: Literal["sequential", "thread", "process"] = "sequential"`: Fitness evaluation backend.
 - `n_jobs: int | None = None`: Worker count for thread/process evaluation. `None` uses the executor default.
 - `chunksize: int | None = None`: Process-pool map chunksize. Ignored by sequential/thread evaluation.
+- `triangle_alpha_range: tuple[int, int] = (20, 255)`: Inclusive alpha range used for initial triangles and alpha mutation bounds.
+
+## Fitness Helpers
+
+`src.ga.fitness` provides module-level helpers that can be passed directly to `fitness_function`:
+
+- `fitness.compute_rmse(...)`: RMSE loss normalized to `[0, 1]`.
+- Custom fitness functions must return lower values for better individuals.
+
+## Triangle Transparency
+
+`triangle_alpha_range` controls the `a` channel on each triangle:
+
+```python
+ga = GeneticAlgorithm(
+    target=target_image,
+    fitness_function=fitness.compute_rmse,
+    population_size=100,
+    generations=50,
+    triangle_alpha_range=(40, 180),
+)
+```
+
+- `(20, 255)` preserves the original default and avoids fully invisible triangles.
+- `(255, 255)` forces fully opaque triangles.
+- `(0, 255)` allows the complete alpha range.
+- Values are inclusive and must be integers in `[0, 255]`.
+- Mutation callbacks receive the range and should keep alpha values inside it.
 
 ## Conditional Rate Rules
 
@@ -206,20 +235,26 @@ ga = GeneticAlgorithm(
 Process backend caveats:
 
 - `fitness_function` must be picklable.
-- Module-level functions such as `src.fitness.compute_rmse` are safest.
+- Module-level functions such as `src.ga.fitness.compute_rmse` are safest.
 - Avoid lambdas and notebook-local closures.
 - Prefer thread or sequential evaluation for normal notebook-only work.
 
 ## Operator Injection
 
-Current `src/ga/cross_over.py` and `src/ga/mutate.py` are scaffolded/commented examples. Define notebook-local callables or implement those modules before importing operators from them.
+Use the operator examples in `src/ga/cross_over.py` and `src/ga/mutate.py`, or define notebook-local callables with matching signatures.
 
 ```python
 def my_crossover(parent1, parent2, crossover_rate):
     return parent1
 
 
-def my_mutation(individual, mutation_rate, image_width, image_height):
+def my_mutation(
+    individual,
+    mutation_rate,
+    image_width,
+    image_height,
+    triangle_alpha_range,
+):
     return individual
 
 
@@ -250,3 +285,7 @@ ga = GeneticAlgorithm(
 - `crossover_rate must be provided when its function is set.`
 - `mutation_rate must be provided when its function is set.`
 - `<rate_name> must be between 0 and 1.`
+- `triangle_alpha_range must be a tuple of two integers.`
+- `triangle_alpha_range must contain integers.`
+- `triangle_alpha_range values must be between 0 and 255.`
+- `triangle_alpha_range minimum must be less than or equal to maximum.`

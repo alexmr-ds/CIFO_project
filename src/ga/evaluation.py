@@ -56,7 +56,7 @@ def validate_process_fitness_function(fitness_function: FitnessFunction) -> None
     except Exception as exc:
         raise ValueError(
             "process evaluation requires a picklable fitness_function. "
-            "Use a module-level function such as src.fitness.compute_rmse."
+            "Use a module-level function such as src.ga.fitness.compute_rmse."
         ) from exc
 
 
