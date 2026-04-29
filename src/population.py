@@ -102,6 +102,37 @@ def create_population(
     ]
 
 
+def create_target_seeded_population(
+    target: np.ndarray,
+    population_size: int = 1000,
+    n_triangles: int = N_TRIANGLES,
+    image_width: int = IMAGE_WIDTH,
+    image_height: int = IMAGE_HEIGHT,
+) -> list[list[Triangle]]:
+    """Creates a population where each triangle's color is sampled from the target image.
+
+    Positions are still random, but colors start near real pixel values, giving
+    the GA a much better starting point than fully random initialization.
+    """
+
+    result = []
+    for _ in range(population_size):
+        individual = []
+        for _ in range(n_triangles):
+            x1 = int(np.random.randint(0, image_width))
+            y1 = int(np.random.randint(0, image_height))
+            x2 = int(np.random.randint(0, image_width))
+            y2 = int(np.random.randint(0, image_height))
+            x3 = int(np.random.randint(0, image_width))
+            y3 = int(np.random.randint(0, image_height))
+            sx = int(np.random.randint(0, image_width))
+            sy = int(np.random.randint(0, image_height))
+            r, g, b = int(target[sy, sx, 0]), int(target[sy, sx, 1]), int(target[sy, sx, 2])
+            individual.append(Triangle(x1=x1, y1=y1, x2=x2, y2=y2, x3=x3, y3=y3, r=r, g=g, b=b, a=255))
+        result.append(individual)
+    return result
+
+
 def validate_triangle_alpha_range(
     triangle_alpha_range: AlphaRange,
 ) -> AlphaRange:
