@@ -168,3 +168,62 @@ def gaussian_triangle_mutation(
             )
 
     return individual
+
+
+def focused_triangle_mutation(
+    individual: list[population.Triangle],
+    mutation_rate: float,
+    image_width: int,
+    image_height: int,
+    triangle_alpha_range: population.AlphaRange = (
+        population.TRIANGLE_ALPHA_RANGE
+    ),
+    position_delta: int = 30,
+    color_delta: int = 45,
+    full_reset_prob: float = 0.1,
+) -> list[population.Triangle]:
+    """Mutates all vertex and color attributes of each selected triangle at once.
+
+    Unlike single-attribute operators, every selected triangle gets all six
+    vertex coordinates and all RGB channels perturbed in the same step,
+    making each mutation ~9x more impactful.
+    """
+
+    if not 0.0 <= mutation_rate <= 1.0:
+        raise ValueError("mutation_rate must be between 0 and 1.")
+
+    min_alpha, max_alpha = population.validate_triangle_alpha_range(
+        triangle_alpha_range
+    )
+
+    for triangle in individual:
+        if np.random.random() >= mutation_rate:
+            continue
+
+        if np.random.random() < full_reset_prob:
+            triangle.x1 = int(np.random.randint(0, image_width))
+            triangle.y1 = int(np.random.randint(0, image_height))
+            triangle.x2 = int(np.random.randint(0, image_width))
+            triangle.y2 = int(np.random.randint(0, image_height))
+            triangle.x3 = int(np.random.randint(0, image_width))
+            triangle.y3 = int(np.random.randint(0, image_height))
+            triangle.r = int(np.random.randint(0, 256))
+            triangle.g = int(np.random.randint(0, 256))
+            triangle.b = int(np.random.randint(0, 256))
+        else:
+            triangle.x1 = max(0, min(image_width - 1, triangle.x1 + int(np.random.randint(-position_delta, position_delta + 1))))
+            triangle.y1 = max(0, min(image_height - 1, triangle.y1 + int(np.random.randint(-position_delta, position_delta + 1))))
+            triangle.x2 = max(0, min(image_width - 1, triangle.x2 + int(np.random.randint(-position_delta, position_delta + 1))))
+            triangle.y2 = max(0, min(image_height - 1, triangle.y2 + int(np.random.randint(-position_delta, position_delta + 1))))
+            triangle.x3 = max(0, min(image_width - 1, triangle.x3 + int(np.random.randint(-position_delta, position_delta + 1))))
+            triangle.y3 = max(0, min(image_height - 1, triangle.y3 + int(np.random.randint(-position_delta, position_delta + 1))))
+            triangle.r = max(0, min(255, triangle.r + int(np.random.randint(-color_delta, color_delta + 1))))
+            triangle.g = max(0, min(255, triangle.g + int(np.random.randint(-color_delta, color_delta + 1))))
+            triangle.b = max(0, min(255, triangle.b + int(np.random.randint(-color_delta, color_delta + 1))))
+
+        if min_alpha == max_alpha:
+            triangle.a = min_alpha
+        else:
+            triangle.a = max(min_alpha, min(max_alpha, triangle.a + int(np.random.randint(-30, 31))))
+
+    return individual

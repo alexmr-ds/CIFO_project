@@ -142,6 +142,8 @@ class GeneticAlgorithm:
         progress: bool = False,
         progress_interval: int = 1,
         progress_callback: ProgressCallback | None = None,
+        local_search_steps: int = 0,
+        max_edge_length: int | None = None,
     ) -> None:
         """
         Configures a genetic image approximation run.
@@ -171,6 +173,8 @@ class GeneticAlgorithm:
             progress: If ``True``, prints one-line generation summaries.
             progress_interval: Print frequency when ``progress`` is enabled.
             progress_callback: Optional callback receiving per-generation telemetry.
+            local_search_steps: Hill-climbing steps applied to the best individual each generation.
+            max_edge_length: If set, no triangle edge may exceed this pixel length.
 
         Raises:
             ValueError: If dimensions, rates, alpha range, backend, worker
@@ -194,6 +198,8 @@ class GeneticAlgorithm:
             raise ValueError("stagnation_window must be greater than zero.")
         if progress_interval <= 0:
             raise ValueError("progress_interval must be greater than zero.")
+        if local_search_steps < 0:
+            raise ValueError("local_search_steps must be non-negative.")
         if progress_callback is not None and not callable(progress_callback):
             raise ValueError("progress_callback must be callable when provided.")
 
@@ -247,6 +253,8 @@ class GeneticAlgorithm:
         self.progress = progress
         self.progress_interval = progress_interval
         self.progress_callback = progress_callback
+        self.local_search_steps = local_search_steps
+        self.max_edge_length = max_edge_length
         self.image_height, self.image_width = self.target.shape[:2]
 
         self.population: list[Individual] = []
@@ -267,6 +275,7 @@ class GeneticAlgorithm:
                 image_width=self.image_width,
                 image_height=self.image_height,
                 triangle_alpha_range=self.triangle_alpha_range,
+                max_edge_length=self.max_edge_length,
             )
         else:
             seeded = copy.deepcopy(self.initial_population[: self.population_size])
@@ -278,6 +287,7 @@ class GeneticAlgorithm:
                         image_width=self.image_width,
                         image_height=self.image_height,
                         triangle_alpha_range=self.triangle_alpha_range,
+                        max_edge_length=self.max_edge_length,
                     )
                 )
             self.population = seeded
@@ -401,6 +411,7 @@ class GeneticAlgorithm:
                 image_width=self.image_width,
                 image_height=self.image_height,
                 triangle_alpha_range=self.triangle_alpha_range,
+                max_edge_length=self.max_edge_length,
             )
         )
         return immigrant_count
@@ -444,6 +455,12 @@ class GeneticAlgorithm:
             self.image_height,
             self.triangle_alpha_range,
         )
+        if self.max_edge_length is not None:
+            for triangle in mutated_individual:
+                population.clamp_triangle_edges(
+                    triangle, self.max_edge_length, self.image_width, self.image_height
+                )
+
         changed_triangles = self._count_changed_triangles(
             before_mutation=before_mutation,
             after_mutation=mutated_individual,
@@ -471,6 +488,40 @@ class GeneticAlgorithm:
             f"mutated_offspring={generation_log['mutated_offspring']} | "
             f"mutated_triangles={generation_log['mutated_triangles']}"
         )
+
+    def _run_local_search(
+        self,
+        individual: Individual,
+        fitness_value: float,
+    ) -> tuple[Individual, float]:
+        """Hill-climbs on one individual, accepting only improvements."""
+
+        current = copy.deepcopy(individual)
+        current_fitness = float(fitness_value)
+
+        for _ in range(self.local_search_steps):
+            candidate = copy.deepcopy(current)
+            idx = int(np.random.randint(0, len(candidate)))
+            t = candidate[idx]
+            delta = 20
+            t.x1 = max(0, min(self.image_width - 1, t.x1 + int(np.random.randint(-delta, delta + 1))))
+            t.y1 = max(0, min(self.image_height - 1, t.y1 + int(np.random.randint(-delta, delta + 1))))
+            t.x2 = max(0, min(self.image_width - 1, t.x2 + int(np.random.randint(-delta, delta + 1))))
+            t.y2 = max(0, min(self.image_height - 1, t.y2 + int(np.random.randint(-delta, delta + 1))))
+            t.x3 = max(0, min(self.image_width - 1, t.x3 + int(np.random.randint(-delta, delta + 1))))
+            t.y3 = max(0, min(self.image_height - 1, t.y3 + int(np.random.randint(-delta, delta + 1))))
+            t.r = max(0, min(255, t.r + int(np.random.randint(-30, 31))))
+            t.g = max(0, min(255, t.g + int(np.random.randint(-30, 31))))
+            t.b = max(0, min(255, t.b + int(np.random.randint(-30, 31))))
+            candidate_fitness = evaluation.compute_individual_fitness(
+                candidate, self.target, self.fitness_function,
+                self.image_width, self.image_height,
+            )
+            if candidate_fitness < current_fitness:
+                current = candidate
+                current_fitness = candidate_fitness
+
+        return current, current_fitness
 
     def run(self) -> tuple[float, list[float]]:
         """
@@ -508,6 +559,15 @@ class GeneticAlgorithm:
 
                 if global_best_fitness < previous_best:
                     self._last_improvement_generation = generation
+
+                if self.local_search_steps > 0 and self.best_individual is not None:
+                    improved, improved_fitness = self._run_local_search(
+                        self.best_individual, self.best_fitness
+                    )
+                    if improved_fitness < self.best_fitness:
+                        self.best_fitness = improved_fitness
+                        self.best_individual = improved
+                        global_best_fitness = improved_fitness
 
                 self._update_mutation_rate(generation)
                 self.history.append(global_best_fitness)
