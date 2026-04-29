@@ -113,3 +113,58 @@ def volatile_triangle_mutation(
                 setattr(triangle, attribute, int(np.random.randint(0, 256)))
 
     return individual
+
+
+def gaussian_triangle_mutation(
+    individual: list[population.Triangle],
+    mutation_rate: float,
+    image_width: int,
+    image_height: int,
+    triangle_alpha_range: population.AlphaRange = (
+        population.TRIANGLE_ALPHA_RANGE
+    ),
+    position_sigma: float = 0.05,
+    color_sigma: float = 0.08,
+    force_opaque: bool = False,
+) -> list[population.Triangle]:
+    """Mutates triangle genes with Gaussian perturbations."""
+
+    if not 0.0 <= mutation_rate <= 1.0:
+        raise ValueError("mutation_rate must be between 0 and 1.")
+    if position_sigma < 0.0 or color_sigma < 0.0:
+        raise ValueError("position_sigma and color_sigma must be non-negative.")
+
+    min_alpha, max_alpha = population.validate_triangle_alpha_range(
+        triangle_alpha_range
+    )
+    sigma_x = max(1.0, position_sigma * image_width)
+    sigma_y = max(1.0, position_sigma * image_height)
+    sigma_color = max(1.0, color_sigma * 255.0)
+
+    for triangle in individual:
+        if np.random.random() >= mutation_rate:
+            continue
+
+        triangle.x1 = int(np.clip(np.round(np.random.normal(triangle.x1, sigma_x)), 0, image_width - 1))
+        triangle.y1 = int(np.clip(np.round(np.random.normal(triangle.y1, sigma_y)), 0, image_height - 1))
+        triangle.x2 = int(np.clip(np.round(np.random.normal(triangle.x2, sigma_x)), 0, image_width - 1))
+        triangle.y2 = int(np.clip(np.round(np.random.normal(triangle.y2, sigma_y)), 0, image_height - 1))
+        triangle.x3 = int(np.clip(np.round(np.random.normal(triangle.x3, sigma_x)), 0, image_width - 1))
+        triangle.y3 = int(np.clip(np.round(np.random.normal(triangle.y3, sigma_y)), 0, image_height - 1))
+
+        triangle.r = int(np.clip(np.round(np.random.normal(triangle.r, sigma_color)), 0, 255))
+        triangle.g = int(np.clip(np.round(np.random.normal(triangle.g, sigma_color)), 0, 255))
+        triangle.b = int(np.clip(np.round(np.random.normal(triangle.b, sigma_color)), 0, 255))
+
+        if force_opaque:
+            triangle.a = 255
+        else:
+            triangle.a = int(
+                np.clip(
+                    np.round(np.random.normal(triangle.a, sigma_color)),
+                    min_alpha,
+                    max_alpha,
+                )
+            )
+
+    return individual

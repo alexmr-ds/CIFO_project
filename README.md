@@ -6,15 +6,19 @@ Notebook-first prototype for approximating a target image with semi-transparent 
 
 - Core prototype pipeline is working across image loading, population generation, rendering, fitness evaluation, and GA orchestration.
 - The intended workflow is notebook-based, centered on [notebooks/Exploration.ipynb](notebooks/Exploration.ipynb).
-- Active modules are `src.load_image`, `src.population`, `src.rendering`, `src.ga.fitness`, and `src.ga.GeneticAlgorithm`.
+- Active modules are `src.load_image`, `src.population`, `src.rendering`, `src.ga.fitness`, `src.ga.GeneticAlgorithm`, `src.ga.workflow`, and `src.ga.legacy`.
 - `src.ga.fitness` includes RMSE fitness helpers.
+- `src.ga.fitness` also provides RMSE+structure fitness helpers for richer guidance.
 - `GeneticAlgorithm.run()` returns `(best_fitness, history)`. The best triangle configuration is available separately as `ga.best_individual`.
+- `GeneticAlgorithm` can stream per-generation progress to notebooks and reports mutation telemetry in generation logs.
 - `GeneticAlgorithm` supports optional crossover and mutation callbacks. `crossover_rate` and `mutation_rate` are only required when the matching callback is provided.
 - `GeneticAlgorithm` supports `triangle_alpha_range` to control triangle transparency during initialization and mutation.
 - Fitness evaluation is sequential by default. `thread` is the notebook-compatible parallel backend; `process` exists but is less reliable inside notebooks.
 - GA backend evaluation mechanics live in `src/ga/evaluation.py`, and run-log formatting lives in `src/ga/logs.py`.
 - See [GeneticAlgorithm.md](GeneticAlgorithm.md) for full class configuration and behavior details.
 - `src/ga/cross_over.py` and `src/ga/mutate.py` contain optional operator examples for triangle individuals.
+- `src/ga/workflow.py` provides staged triangle-count orchestration for notebook experiments.
+- `src/ga/legacy.py` provides a legacy-style high-quality pipeline (opaque triangles, seeded colors, adaptive Gaussian mutation, diversity injection, and local search).
 - Validation is currently based on compile/import/smoke checks. There is not yet a formal automated test suite.
 
 ## Current Workflow
@@ -73,6 +77,41 @@ run_logs = ga.run_logs
 
 `best_fitness` is the lowest fitness found during the run. `history` contains the global best fitness after each generation. `best_individual` is the best triangle configuration found globally.
 
+### Live Progress Tracking in Notebooks
+
+Use `progress=True` for built-in console updates, or attach `progress_callback` to collect generation telemetry:
+
+```python
+from IPython.display import clear_output
+from src.ga import GeneticAlgorithm, fitness, mutate
+
+progress_rows = []
+
+def on_progress(generation_log):
+    progress_rows.append(generation_log)
+    if generation_log["generation"] % 10 == 0:
+        clear_output(wait=True)
+        print(
+            f"gen={generation_log['generation'] + 1} "
+            f"best={generation_log['global_best_fitness']:.6f} "
+            f"mutated={generation_log['mutated_offspring']} "
+            f"triangles_changed={generation_log['mutated_triangles']}"
+        )
+
+ga = GeneticAlgorithm(
+    target=target_image,
+    fitness_function=fitness.compute_rmse,
+    population_size=120,
+    generations=80,
+    mutation_function=mutate.volatile_triangle_mutation,
+    mutation_rate=0.1,
+    logs=True,
+    progress=True,
+    progress_interval=5,
+    progress_callback=on_progress,
+)
+```
+
 ### Triangle Transparency
 
 Triangle transparency is controlled by an inclusive alpha range:
@@ -88,6 +127,145 @@ ga = GeneticAlgorithm(
 ```
 
 The default is `(20, 255)`, which preserves the original behavior and avoids fully invisible triangles by default. Use `(255, 255)` for fully opaque triangles or `(0, 255)` to allow the full alpha range. Mutation operators receive the same range so mutated alpha values stay within the configured bounds.
+
+### Richer Fitness (RMSE + Structure)
+
+You can blend RMSE with an edge-structure term for better shape preservation:
+
+```python
+from src.ga import fitness
+
+hybrid_fitness = fitness.make_rmse_structure_fitness(
+    rmse_weight=1.0,
+    structure_weight=0.35,
+)
+
+ga = GeneticAlgorithm(
+    target=target_image,
+    fitness_function=hybrid_fitness,
+    population_size=100,
+    generations=50,
+)
+```
+
+### Adaptive Mutation and Diversity Control
+
+`GeneticAlgorithm` now supports adaptive mutation schedules and random-immigrant diversity injection:
+
+```python
+from src.ga import GeneticAlgorithm, mutate
+
+ga = GeneticAlgorithm(
+    target=target_image,
+    fitness_function=fitness.compute_rmse,
+    population_size=120,
+    generations=80,
+    mutation_function=mutate.volatile_triangle_mutation,
+    mutation_rate=0.12,
+    adaptive_mutation=True,
+    mutation_rate_bounds=(0.03, 0.25),
+    random_immigrants=6,
+)
+```
+
+### Staged Triangle-Count Workflow
+
+Use staged optimization to grow representation complexity over time:
+
+```python
+from src.ga import (
+    StageConfig,
+    cross_over,
+    fitness,
+    mutate,
+    run_staged_triangle_optimization,
+)
+
+hybrid_fitness = fitness.make_rmse_structure_fitness(1.0, 0.35)
+stages = [
+    StageConfig(
+        n_triangles=40,
+        generations=50,
+        mutation_rate=0.14,
+        crossover_rate=0.85,
+        adaptive_mutation=True,
+        mutation_rate_bounds=(0.06, 0.22),
+        random_immigrants=6,
+    ),
+    StageConfig(
+        n_triangles=80,
+        generations=70,
+        mutation_rate=0.10,
+        crossover_rate=0.85,
+        adaptive_mutation=True,
+        mutation_rate_bounds=(0.03, 0.16),
+        random_immigrants=4,
+    ),
+    StageConfig(
+        n_triangles=120,
+        generations=80,
+        mutation_rate=0.08,
+        crossover_rate=0.8,
+        adaptive_mutation=True,
+        mutation_rate_bounds=(0.02, 0.12),
+        random_immigrants=2,
+    ),
+]
+
+result = run_staged_triangle_optimization(
+    target=target_image,
+    fitness_function=hybrid_fitness,
+    population_size=120,
+    stages=stages,
+    elitism=2,
+    crossover_function=cross_over.two_point_crossover,
+    mutation_function=mutate.volatile_triangle_mutation,
+)
+
+best_fitness = result.best_fitness
+history = result.history
+best_individual = result.best_individual
+stage_results = result.stage_results
+```
+
+### Legacy-Style High-Quality Pipeline
+
+If your previous project performed better with opaque triangles and stronger stagnation handling, use this runner:
+
+```python
+from src.ga import LegacyPipelineConfig, fitness, run_legacy_pipeline
+
+legacy_config = LegacyPipelineConfig(
+    population_size=200,
+    generations=400,
+    n_triangles=100,
+    elitism_fraction=0.2,
+    tournament_size=3,
+    mutation_rate=0.15,
+    position_sigma=0.05,
+    color_sigma=0.08,
+    stagnation_boost_window=15,
+    diversity_window=30,
+    local_search_steps=50,
+    evaluation_backend="process",
+    n_jobs=8,
+    chunksize=8,
+    seed=42,
+    progress=True,
+    progress_interval=10,
+)
+
+legacy_result = run_legacy_pipeline(
+    target=target_image,
+    config=legacy_config,
+    fitness_function=fitness.compute_rmse,
+)
+
+best_fitness = legacy_result.best_fitness
+history = legacy_result.history
+best_individual = legacy_result.best_individual
+generation_logs = legacy_result.generation_logs
+```
 
 ### Optional Genetic Operators
 
@@ -191,6 +369,7 @@ Parallel evaluation details:
 - `chunksize`: controls process-pool batching and is ignored by sequential/thread evaluation.
 - During `run()`, non-sequential backends reuse the same executor across generations.
 - When `logs=True`, `run_logs` is a summary dictionary with generation fitness logs, `best_fitness`, and a JSON-friendly `best_individual_configuration`.
+- Generation logs now include `mutation_rate_used`, `offspring_created`, `mutated_offspring`, `mutated_triangles`, and `immigrant_count`.
 
 ## Current Limitations
 
@@ -214,6 +393,8 @@ Parallel evaluation details:
 
 - `README.md`: Project overview, notebook workflow, setup instructions, progress status, limitations, and maintained file tree.
 - `GeneticAlgorithm.md`: Detailed notebook-first reference for `src.ga.GeneticAlgorithm`.
+- `src/ga/workflow.py`: Staged optimization helpers (`StageConfig`, `run_staged_triangle_optimization`).
+- `src/ga/legacy.py`: Legacy-style GA runner (`LegacyPipelineConfig`, `run_legacy_pipeline`).
 - `AGENTS.md`: Repository instructions for GA terminology, API expectations, and project conventions.
 - `main.py`: Minimal CLI entrypoint used for simple environment smoke checks.
 - `pyproject.toml`: Project metadata and dependency declarations managed with `uv`.

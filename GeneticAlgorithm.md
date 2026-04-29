@@ -6,6 +6,8 @@ Lower fitness is better because the default fitness function is RMSE.
 
 Internally, `src/ga/algorithm.py` keeps the GA lifecycle focused on population state, selection, operators, best-fitness tracking, and generation flow. Evaluation backend mechanics live in `src/ga/evaluation.py`, and run-log formatting lives in `src/ga/logs.py`.
 
+For an alternative pipeline tuned for stronger stagnation handling and local search, see `src/ga/legacy.py`.
+
 ## Notebook Recommended Usage
 
 ```python
@@ -53,6 +55,15 @@ ga = GeneticAlgorithm(
     n_jobs=None,
     chunksize=None,
     triangle_alpha_range=(20, 255),
+    n_triangles=100,
+    adaptive_mutation=False,
+    mutation_rate_bounds=None,
+    stagnation_window=8,
+    random_immigrants=0,
+    initial_population=None,
+    progress=False,
+    progress_interval=1,
+    progress_callback=None,
 )
 ```
 
@@ -73,13 +84,33 @@ ga = GeneticAlgorithm(
 - `n_jobs: int | None = None`: Worker count for thread/process evaluation. `None` uses the executor default.
 - `chunksize: int | None = None`: Process-pool map chunksize. Ignored by sequential/thread evaluation.
 - `triangle_alpha_range: tuple[int, int] = (20, 255)`: Inclusive alpha range used for initial triangles and alpha mutation bounds.
+- `n_triangles: int = 100`: Number of triangles per individual.
+- `adaptive_mutation: bool = False`: Enables adaptive mutation-rate scheduling when mutation is configured.
+- `mutation_rate_bounds: tuple[float, float] | None = None`: Optional min/max mutation-rate range used in adaptive mode.
+- `stagnation_window: int = 8`: Number of generations without improvement before adaptive mutation boost.
+- `random_immigrants: int = 0`: Number of random individuals injected per generation to preserve diversity.
+- `initial_population: list[individual] | None = None`: Optional seeded generation-0 population.
+- `progress: bool = False`: Prints per-generation progress lines during `run()`.
+- `progress_interval: int = 1`: Frequency for printed progress updates.
+- `progress_callback: Callable | None = None`: Optional callback receiving each generation log payload.
 
 ## Fitness Helpers
 
 `src.ga.fitness` provides module-level helpers that can be passed directly to `fitness_function`:
 
 - `fitness.compute_rmse(...)`: RMSE loss normalized to `[0, 1]`.
+- `fitness.compute_rmse_plus_structure(...)`: Weighted RMSE + edge-structure loss.
+- `fitness.make_rmse_structure_fitness(...)`: Factory that returns a configured callable for `fitness_function`.
 - Custom fitness functions must return lower values for better individuals.
+
+Example:
+
+```python
+hybrid_fitness = fitness.make_rmse_structure_fitness(
+    rmse_weight=1.0,
+    structure_weight=0.35,
+)
+```
 
 ## Triangle Transparency
 
@@ -121,6 +152,7 @@ best_fitness, history = ga.run()
 - `ga.best_fitness` stores the same value returned as `best_fitness`.
 - `ga.history` stores the same values returned as `history`.
 - `ga.run_logs` remains `{}` unless `logs=True`.
+- Progress callbacks receive telemetry every generation, even when `logs=False`.
 
 ## Evaluate Behavior
 
@@ -150,6 +182,11 @@ When `logs=True`, `ga.run_logs` is populated after `run()` finishes:
             "n_jobs": None,
             "chunksize": None,
             "evaluation_duration_seconds": 0.03,
+            "mutation_rate_used": 0.1,
+            "offspring_created": 118,
+            "mutated_offspring": 73,
+            "mutated_triangles": 221,
+            "immigrant_count": 0,
         }
     ],
     "best_fitness": 123.4,
@@ -171,6 +208,38 @@ When `logs=True`, `ga.run_logs` is populated after `run()` finishes:
 ```
 
 The `best_individual_configuration` value is JSON-friendly and can be stored later if a persistence layer is added.
+
+## Live Notebook Progress Tracking
+
+```python
+from IPython.display import clear_output
+from src.ga import mutate
+
+progress_rows = []
+
+def on_progress(generation_log):
+    progress_rows.append(generation_log)
+    if generation_log["generation"] % 10 == 0:
+        clear_output(wait=True)
+        print(
+            f"gen={generation_log['generation'] + 1} "
+            f"best={generation_log['global_best_fitness']:.6f} "
+            f"mutated={generation_log['mutated_offspring']} "
+            f"triangles_changed={generation_log['mutated_triangles']}"
+        )
+
+ga = GeneticAlgorithm(
+    target=target_image,
+    fitness_function=fitness.compute_rmse,
+    population_size=120,
+    generations=80,
+    mutation_function=mutate.volatile_triangle_mutation,
+    mutation_rate=0.1,
+    progress=True,
+    progress_interval=5,
+    progress_callback=on_progress,
+)
+```
 
 ## Selection Strategies
 
@@ -268,6 +337,115 @@ ga = GeneticAlgorithm(
     crossover_rate=0.8,
     mutation_function=my_mutation,
     mutation_rate=0.1,
+)
+```
+
+## Adaptive Mutation and Diversity
+
+```python
+from src.ga import GeneticAlgorithm, mutate
+
+ga = GeneticAlgorithm(
+    target=target_image,
+    fitness_function=fitness.compute_rmse,
+    population_size=120,
+    generations=80,
+    mutation_function=mutate.volatile_triangle_mutation,
+    mutation_rate=0.12,
+    adaptive_mutation=True,
+    mutation_rate_bounds=(0.03, 0.25),
+    stagnation_window=10,
+    random_immigrants=6,
+)
+```
+
+## Staged Triangle-Count Workflow
+
+For multi-phase runs, use `src.ga.workflow`:
+
+```python
+from src.ga import (
+    StageConfig,
+    cross_over,
+    fitness,
+    mutate,
+    run_staged_triangle_optimization,
+)
+
+stages = [
+    StageConfig(
+        n_triangles=40,
+        generations=50,
+        mutation_rate=0.14,
+        crossover_rate=0.85,
+        adaptive_mutation=True,
+        mutation_rate_bounds=(0.06, 0.22),
+        random_immigrants=6,
+    ),
+    StageConfig(
+        n_triangles=80,
+        generations=60,
+        mutation_rate=0.1,
+        crossover_rate=0.85,
+        adaptive_mutation=True,
+        mutation_rate_bounds=(0.03, 0.16),
+        random_immigrants=4,
+    ),
+]
+
+result = run_staged_triangle_optimization(
+    target=target_image,
+    fitness_function=fitness.make_rmse_structure_fitness(1.0, 0.35),
+    population_size=120,
+    stages=stages,
+    elitism=2,
+    crossover_function=cross_over.two_point_crossover,
+    mutation_function=mutate.volatile_triangle_mutation,
+)
+
+best_fitness = result.best_fitness
+history = result.history
+best_individual = result.best_individual
+```
+
+## Legacy-Style Pipeline
+
+`src.ga.legacy.run_legacy_pipeline(...)` implements an alternative workflow with:
+- fully opaque triangles (`a=255`)
+- target-seeded color initialization
+- 20% elitism + tournament selection
+- whole-triangle crossover
+- Gaussian mutation with adaptive sigmas
+- stagnation-triggered diversity replacement
+- per-generation hill-climbing on the current best
+
+```python
+from src.ga import LegacyPipelineConfig, fitness, run_legacy_pipeline
+
+legacy_config = LegacyPipelineConfig(
+    population_size=200,
+    generations=400,
+    n_triangles=100,
+    elitism_fraction=0.2,
+    tournament_size=3,
+    mutation_rate=0.15,
+    position_sigma=0.05,
+    color_sigma=0.08,
+    stagnation_boost_window=15,
+    diversity_window=30,
+    local_search_steps=50,
+    evaluation_backend="process",
+    n_jobs=8,
+    chunksize=8,
+    seed=42,
+    progress=True,
+    progress_interval=10,
+)
+
+legacy_result = run_legacy_pipeline(
+    target=target_image,
+    config=legacy_config,
+    fitness_function=fitness.compute_rmse,
 )
 ```
 

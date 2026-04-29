@@ -35,6 +35,11 @@ class GenerationLog(TypedDict):
     n_jobs: int | None
     chunksize: int | None
     evaluation_duration_seconds: float
+    mutation_rate_used: float
+    offspring_created: int
+    mutated_offspring: int
+    mutated_triangles: int
+    immigrant_count: int
 
 
 class RunLogs(TypedDict, total=False):
@@ -54,6 +59,11 @@ def create_generation_log(
     n_jobs: int | None,
     chunksize: int | None,
     evaluation_duration_seconds: float,
+    mutation_rate_used: float,
+    offspring_created: int,
+    mutated_offspring: int,
+    mutated_triangles: int,
+    immigrant_count: int,
 ) -> GenerationLog:
     """Creates one per-generation log entry."""
 
@@ -66,6 +76,11 @@ def create_generation_log(
         "n_jobs": n_jobs,
         "chunksize": chunksize,
         "evaluation_duration_seconds": evaluation_duration_seconds,
+        "mutation_rate_used": mutation_rate_used,
+        "offspring_created": offspring_created,
+        "mutated_offspring": mutated_offspring,
+        "mutated_triangles": mutated_triangles,
+        "immigrant_count": immigrant_count,
     }
 
 

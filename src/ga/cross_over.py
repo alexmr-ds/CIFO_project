@@ -164,3 +164,25 @@ def two_point_crossover_two_children(
     child2 = parent2[:point1] + parent1[point1:point2] + parent2[point2:]
 
     return copy.deepcopy(child1), copy.deepcopy(child2)
+
+
+def whole_triangle_crossover(
+    parent1: list[population.Triangle],
+    parent2: list[population.Triangle],
+    crossover_rate: float,
+) -> list[population.Triangle]:
+    """Creates one child by inheriting each triangle slot from one parent."""
+
+    if len(parent1) != len(parent2):
+        raise ValueError("whole_triangle_crossover requires equal-length parents.")
+
+    if np.random.random() >= crossover_rate:
+        fallback_parent = parent1 if np.random.random() < 0.5 else parent2
+        return copy.deepcopy(fallback_parent)
+
+    child: list[population.Triangle] = []
+    for triangle1, triangle2 in zip(parent1, parent2, strict=True):
+        source_triangle = triangle1 if np.random.random() < 0.5 else triangle2
+        child.append(copy.deepcopy(source_triangle))
+
+    return child
