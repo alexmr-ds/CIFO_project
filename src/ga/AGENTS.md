@@ -7,7 +7,7 @@
 
 ## Operator Interfaces
 
-- Crossover functions must use `fn(parent1, parent2, crossover_rate) -> individual`.
+- Crossover functions must use `fn(parent1, parent2, crossover_rate) -> individual` or return multiple individuals as a tuple/list.
 - Mutation functions must use `fn(individual, mutation_rate, image_width, image_height, triangle_alpha_range) -> individual`.
 - Mutation functions should preserve coordinates within image bounds and alpha values within `triangle_alpha_range`.
 - `GeneticAlgorithm.run()` returns `(best_fitness, history)`, and `history` stores the global best fitness after each generation.

@@ -29,6 +29,7 @@ class StageConfig:
     crossover_rate: float | None = None
     adaptive_mutation: bool = False
     mutation_rate_bounds: RateBounds | None = None
+    stagnation_window: int = 8
     random_immigrants: int = 0
 
 
@@ -61,6 +62,8 @@ def expand_individual_to_triangle_count(
     triangle_alpha_range: population.AlphaRange = (
         population.TRIANGLE_ALPHA_RANGE
     ),
+    target: np.ndarray | None = None,
+    seeded: bool = False,
 ) -> Individual:
     """Expands or truncates an individual to match the requested triangle count."""
 
@@ -74,6 +77,8 @@ def expand_individual_to_triangle_count(
                 image_width=image_width,
                 image_height=image_height,
                 triangle_alpha_range=triangle_alpha_range,
+                target=target,
+                seeded=seeded,
             )
         )
 
@@ -90,6 +95,8 @@ def create_seed_population_from_best(
     triangle_alpha_range: population.AlphaRange = (
         population.TRIANGLE_ALPHA_RANGE
     ),
+    target: np.ndarray | None = None,
+    seeded: bool = False,
 ) -> list[Individual]:
     """Creates a seeded initial population around a known best individual."""
 
@@ -104,6 +111,8 @@ def create_seed_population_from_best(
         image_width=image_width,
         image_height=image_height,
         triangle_alpha_range=triangle_alpha_range,
+        target=target,
+        seeded=seeded,
     )
     seeded_population = [copy.deepcopy(base_individual)]
 
@@ -137,6 +146,7 @@ def run_staged_triangle_optimization(
     triangle_alpha_range: population.AlphaRange = (
         population.TRIANGLE_ALPHA_RANGE
     ),
+    seeded: bool = False,
     seed_mutation_rate: float = 0.08,
 ) -> StagedRunResult:
     """Runs multiple GA stages with increasing or customized triangle counts."""
@@ -155,6 +165,10 @@ def run_staged_triangle_optimization(
             raise ValueError("Each stage n_triangles must be greater than zero.")
         if stage.generations <= 0:
             raise ValueError("Each stage generations value must be greater than zero.")
+        if stage.stagnation_window <= 0:
+            raise ValueError(
+                "Each stage stagnation_window must be greater than zero."
+            )
 
         initial_population: list[Individual] | None = None
         if best_individual is not None:
@@ -166,6 +180,8 @@ def run_staged_triangle_optimization(
                 image_height=image_height,
                 seed_mutation_rate=seed_mutation_rate,
                 triangle_alpha_range=triangle_alpha_range,
+                target=target,
+                seeded=seeded,
             )
 
         ga = GeneticAlgorithm(
@@ -187,8 +203,10 @@ def run_staged_triangle_optimization(
             n_triangles=stage.n_triangles,
             adaptive_mutation=stage.adaptive_mutation,
             mutation_rate_bounds=stage.mutation_rate_bounds,
+            stagnation_window=stage.stagnation_window,
             random_immigrants=stage.random_immigrants,
             initial_population=initial_population,
+            seeded=seeded,
         )
 
         stage_best_fitness, stage_history = ga.run()

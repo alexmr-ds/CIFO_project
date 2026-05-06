@@ -11,7 +11,8 @@ from . import evaluation, logs, selection
 
 Individual = list[population.Triangle]
 FitnessFunction = evaluation.FitnessFunction
-CrossoverFunction = Callable[[Individual, Individual, float], Individual]
+CrossoverResult = Individual | tuple[Individual, ...] | list[Individual]
+CrossoverFunction = Callable[[Individual, Individual, float], CrossoverResult]
 MutationFunction = Callable[
     [Individual, float, int, int, population.AlphaRange], Individual
 ]
@@ -23,11 +24,13 @@ ProgressCallback = Callable[[logs.GenerationLog], None]
 
 class GeneticAlgorithm:
     """
-    Evolves triangle-based images to minimize a target-image fitness function.
+    Evolves triangle-based image candidates toward lower fitness.
 
-    The class owns population initialization, parent selection, optional
-    crossover/mutation operators, sequential or parallel fitness evaluation,
-    global-best tracking, and optional in-memory run logs.
+    Each individual is a complete candidate image with ``n_triangles`` triangles.
+    The algorithm maintains ``population_size`` individuals per generation,
+    evaluates their rendered images, tracks the global best individual, and
+    optionally applies elitism, crossover, mutation, adaptive mutation, random
+    immigrants, seeded RGB initialization, progress callbacks, and run logs.
     """
 
     @staticmethod
@@ -139,6 +142,7 @@ class GeneticAlgorithm:
         stagnation_window: int = 8,
         random_immigrants: int = 0,
         initial_population: list[Individual] | None = None,
+        seeded: bool = False,
         progress: bool = False,
         progress_interval: int = 1,
         progress_callback: ProgressCallback | None = None,
@@ -156,7 +160,8 @@ class GeneticAlgorithm:
             elitism: Number of best individuals copied unchanged per generation.
             selection_type: Parent selection strategy handled by ``selection``.
             logs: Whether to populate ``run_logs`` after ``run()``.
-            crossover_function: Optional operator returning one child individual.
+            crossover_function: Optional operator returning one child individual
+                or multiple child individuals.
             mutation_function: Optional operator returning one mutated individual.
             evaluation_backend: ``sequential``, ``thread``, or ``process``.
             n_jobs: Optional worker count for thread or process evaluation.
@@ -167,7 +172,8 @@ class GeneticAlgorithm:
             mutation_rate_bounds: Optional adaptive mutation min/max rate.
             stagnation_window: Generations without improvement before mutation boost.
             random_immigrants: Number of random individuals injected each generation.
-            initial_population: Optional seeded population for generation 0.
+            initial_population: Optional explicit population for generation 0.
+            seeded: Whether generation-0 random triangles sample target RGB values.
             progress: If ``True``, prints one-line generation summaries.
             progress_interval: Print frequency when ``progress`` is enabled.
             progress_callback: Optional callback receiving per-generation telemetry.
@@ -244,6 +250,7 @@ class GeneticAlgorithm:
             initial_population,
             n_triangles=n_triangles,
         )
+        self.seeded = seeded
         self.progress = progress
         self.progress_interval = progress_interval
         self.progress_callback = progress_callback
@@ -258,7 +265,7 @@ class GeneticAlgorithm:
         self._last_improvement_generation = 0
 
     def initialize(self) -> None:
-        """Creates the initial population and resets run state."""
+        """Creates generation-0 population and resets run state."""
 
         if self.initial_population is None:
             self.population = population.create_population(
@@ -267,6 +274,8 @@ class GeneticAlgorithm:
                 image_width=self.image_width,
                 image_height=self.image_height,
                 triangle_alpha_range=self.triangle_alpha_range,
+                target=self.target,
+                seeded=self.seeded,
             )
         else:
             seeded = copy.deepcopy(self.initial_population[: self.population_size])
@@ -278,6 +287,8 @@ class GeneticAlgorithm:
                         image_width=self.image_width,
                         image_height=self.image_height,
                         triangle_alpha_range=self.triangle_alpha_range,
+                        target=self.target,
+                        seeded=self.seeded,
                     )
                 )
             self.population = seeded
@@ -419,16 +430,32 @@ class GeneticAlgorithm:
         self,
         parent1: Individual,
         parent2: Individual,
-    ) -> Individual:
-        """Applies the configured crossover function when one is provided."""
+    ) -> list[Individual]:
+        """Applies the configured crossover function and normalizes its children."""
 
         if self.crossover_function is None:
             fallback_parent = parent1 if np.random.random() < 0.5 else parent2
-            return copy.deepcopy(fallback_parent)
+            return [copy.deepcopy(fallback_parent)]
 
-        child = self.crossover_function(parent1, parent2, self.crossover_rate)
+        crossover_result = self.crossover_function(
+            parent1,
+            parent2,
+            self.crossover_rate,
+        )
+        if isinstance(crossover_result, tuple):
+            children = list(crossover_result)
+        elif crossover_result and isinstance(
+            crossover_result[0],
+            population.Triangle,
+        ):
+            children = [crossover_result]
+        else:
+            children = list(crossover_result)
 
-        return copy.deepcopy(child)
+        if not children:
+            raise ValueError("crossover_function must return at least one child.")
+
+        return copy.deepcopy(children)
 
     def mutate(self, individual: Individual) -> tuple[Individual, int]:
         """Applies the configured mutation function when one is provided."""
@@ -526,13 +553,16 @@ class GeneticAlgorithm:
                     while len(next_population) < self.population_size:
                         parent1 = self.select_parent(fitness_values)
                         parent2 = self.select_parent(fitness_values)
-                        child = self.crossover(parent1, parent2)
-                        child, changed_triangles = self.mutate(child)
-                        offspring_created += 1
-                        mutated_triangles += changed_triangles
-                        if changed_triangles > 0:
-                            mutated_offspring += 1
-                        next_population.append(child)
+                        children = self.crossover(parent1, parent2)
+                        for child in children:
+                            if len(next_population) >= self.population_size:
+                                break
+                            child, changed_triangles = self.mutate(child)
+                            offspring_created += 1
+                            mutated_triangles += changed_triangles
+                            if changed_triangles > 0:
+                                mutated_offspring += 1
+                            next_population.append(child)
 
                     self.population = next_population[: self.population_size]
 

@@ -1,5 +1,6 @@
 """Computes image fitness metrics for triangle-based GA runs."""
 
+import functools
 from collections.abc import Callable
 
 import numpy as np
@@ -71,19 +72,15 @@ def make_rmse_structure_fitness(
     rmse_weight: float = 1.0,
     structure_weight: float = 0.35,
 ) -> FitnessFunction:
-    """Builds a configured RMSE+structure fitness callable."""
+    """Builds a configured, picklable RMSE+structure fitness callable."""
 
     if rmse_weight < 0.0 or structure_weight < 0.0:
         raise ValueError("rmse_weight and structure_weight must be non-negative.")
     if rmse_weight == 0.0 and structure_weight == 0.0:
         raise ValueError("At least one fitness weight must be greater than zero.")
 
-    def blended_fitness(target: np.ndarray, generated: np.ndarray) -> float:
-        return compute_rmse_plus_structure(
-            target=target,
-            generated=generated,
-            rmse_weight=rmse_weight,
-            structure_weight=structure_weight,
-        )
-
-    return blended_fitness
+    return functools.partial(
+        compute_rmse_plus_structure,
+        rmse_weight=rmse_weight,
+        structure_weight=structure_weight,
+    )

@@ -121,7 +121,7 @@ def compute_population_fitness_with_executor(
                 repeat(image_width),
                 repeat(image_height),
             )
-    )
+        )
 
     if chunksize is None:
         return list(
