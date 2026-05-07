@@ -1,12 +1,10 @@
 # GeneticAlgorithm Reference
 
-`src.ga.GeneticAlgorithm` evolves triangle-based images to minimize a target-image fitness function. The project is currently operated from notebooks, so the recommended workflow is to use sequential evaluation by default and thread evaluation only when experimenting with notebook-compatible parallelism.
+`src.ga.GeneticAlgorithm` evolves triangle-based images to minimize a target-image fitness function. The project is currently operated from notebooks, so the recommended workflow is to use seeded or random initialization with sequential evaluation by default and thread evaluation only when experimenting with notebook-compatible parallelism.
 
 Lower fitness is better because the default fitness function is RMSE.
 
 Internally, `src/ga/algorithm.py` keeps the GA lifecycle focused on population state, selection, operators, best-fitness tracking, and generation flow. Evaluation backend mechanics live in `src/ga/evaluation.py`, and run-log formatting lives in `src/ga/logs.py`.
-
-For an alternative pipeline tuned for stronger stagnation handling and local search, see `src/ga/legacy.py`.
 
 ## Notebook Recommended Usage
 
@@ -23,6 +21,7 @@ ga = GeneticAlgorithm(
     population_size=100,
     generations=50,
     elitism=2,
+    seeded=True,
     logs=True,
 )
 
@@ -54,13 +53,14 @@ ga = GeneticAlgorithm(
     evaluation_backend="sequential",
     n_jobs=None,
     chunksize=None,
-    triangle_alpha_range=(20, 255),
+    triangle_alpha_range=(5, 255),
     n_triangles=100,
     adaptive_mutation=False,
     mutation_rate_bounds=None,
     stagnation_window=8,
     random_immigrants=0,
     initial_population=None,
+    seeded=False,
     progress=False,
     progress_interval=1,
     progress_callback=None,
@@ -83,13 +83,14 @@ ga = GeneticAlgorithm(
 - `evaluation_backend: Literal["sequential", "thread", "process"] = "sequential"`: Fitness evaluation backend.
 - `n_jobs: int | None = None`: Worker count for thread/process evaluation. `None` uses the executor default.
 - `chunksize: int | None = None`: Process-pool map chunksize. Ignored by sequential/thread evaluation.
-- `triangle_alpha_range: tuple[int, int] = (20, 255)`: Inclusive alpha range used for initial triangles and alpha mutation bounds.
+- `triangle_alpha_range: tuple[int, int] = (5, 255)`: Inclusive alpha range used for initial triangles and alpha mutation bounds.
 - `n_triangles: int = 100`: Number of triangles per individual.
 - `adaptive_mutation: bool = False`: Enables adaptive mutation-rate scheduling when mutation is configured.
 - `mutation_rate_bounds: tuple[float, float] | None = None`: Optional min/max mutation-rate range used in adaptive mode.
 - `stagnation_window: int = 8`: Number of generations without improvement before adaptive mutation boost.
 - `random_immigrants: int = 0`: Number of random individuals injected per generation to preserve diversity.
-- `initial_population: list[individual] | None = None`: Optional seeded generation-0 population.
+- `initial_population: list[individual] | None = None`: Optional explicit generation-0 population.
+- `seeded: bool = False`: When `True`, random generation-0 triangles copy RGB values from random target pixels.
 - `progress: bool = False`: Prints per-generation progress lines during `run()`.
 - `progress_interval: int = 1`: Frequency for printed progress updates.
 - `progress_callback: Callable | None = None`: Optional callback receiving each generation log payload.
@@ -126,11 +127,31 @@ ga = GeneticAlgorithm(
 )
 ```
 
-- `(20, 255)` preserves the original default and avoids fully invisible triangles.
+- `(5, 255)` is the default and avoids fully invisible triangles.
 - `(255, 255)` forces fully opaque triangles.
 - `(0, 255)` allows the complete alpha range.
 - Values are inclusive and must be integers in `[0, 255]`.
+- Initial alpha values are sampled uniformly from the configured range.
 - Mutation callbacks receive the range and should keep alpha values inside it.
+
+## Seeded RGB Initialization
+
+`seeded=True` biases generation-0 triangle colors toward the target image:
+
+```python
+ga = GeneticAlgorithm(
+    target=target_image,
+    fitness_function=fitness.compute_rmse,
+    population_size=100,
+    generations=50,
+    seeded=True,
+)
+```
+
+- Each seeded triangle copies an exact RGB triplet from one random target pixel.
+- Triangle vertices remain random, and alpha is sampled uniformly from `triangle_alpha_range`.
+- Seeded creation applies to fresh generation-0 populations and backfill when `initial_population` is shorter than `population_size`.
+- `random_immigrants` remain fully random in later generations.
 
 ## Conditional Rate Rules
 
@@ -146,6 +167,7 @@ best_fitness, history = ga.run()
 ```
 
 - `run()` initializes a fresh population every time it is called.
+- With `seeded=True`, generation-0 random triangles use target-pixel RGB values.
 - `best_fitness` is the global best fitness found across all generations.
 - `history` stores the global best fitness after each generation.
 - `ga.best_individual` stores the best triangle configuration found globally.
@@ -380,6 +402,7 @@ stages = [
         crossover_rate=0.85,
         adaptive_mutation=True,
         mutation_rate_bounds=(0.06, 0.22),
+        stagnation_window=12,
         random_immigrants=6,
     ),
     StageConfig(
@@ -389,6 +412,7 @@ stages = [
         crossover_rate=0.85,
         adaptive_mutation=True,
         mutation_rate_bounds=(0.03, 0.16),
+        stagnation_window=18,
         random_immigrants=4,
     ),
 ]
@@ -401,6 +425,7 @@ result = run_staged_triangle_optimization(
     elitism=2,
     crossover_function=cross_over.two_point_crossover,
     mutation_function=mutate.volatile_triangle_mutation,
+    seeded=True,
 )
 
 best_fitness = result.best_fitness
@@ -408,50 +433,14 @@ history = result.history
 best_individual = result.best_individual
 ```
 
-## Legacy-Style Pipeline
-
-`src.ga.legacy.run_legacy_pipeline(...)` implements an alternative workflow with:
-- fully opaque triangles (`a=255`)
-- target-seeded color initialization
-- 20% elitism + tournament selection
-- whole-triangle crossover
-- Gaussian mutation with adaptive sigmas
-- stagnation-triggered diversity replacement
-- per-generation hill-climbing on the current best
-
-```python
-from src.ga import LegacyPipelineConfig, fitness, run_legacy_pipeline
-
-legacy_config = LegacyPipelineConfig(
-    population_size=200,
-    generations=400,
-    n_triangles=100,
-    elitism_fraction=0.2,
-    tournament_size=3,
-    mutation_rate=0.15,
-    position_sigma=0.05,
-    color_sigma=0.08,
-    stagnation_boost_window=15,
-    diversity_window=30,
-    local_search_steps=50,
-    evaluation_backend="process",
-    n_jobs=8,
-    chunksize=8,
-    seed=42,
-    progress=True,
-    progress_interval=10,
-)
-
-legacy_result = run_legacy_pipeline(
-    target=target_image,
-    config=legacy_config,
-    fitness_function=fitness.compute_rmse,
-)
-```
+`StageConfig.stagnation_window` is configured per stage and defaults to `8`, matching `GeneticAlgorithm`.
 
 ## Common Validation Errors
 
 - `target must have shape (H, W, 3).`
+- `target must be provided when seeded=True.`
+- `target must be a NumPy array when seeded=True.`
+- `target dimensions must match image_height and image_width.`
 - `population_size must be greater than zero.`
 - `generations must be greater than zero.`
 - `elitism must be between 0 and population_size.`

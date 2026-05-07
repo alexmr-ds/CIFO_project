@@ -1,4 +1,4 @@
-"""Generates random triangle individuals for the genetic algorithm."""
+"""Generates random and target-biased triangle populations."""
 
 from dataclasses import dataclass
 
@@ -8,7 +8,7 @@ IMAGE_WIDTH = 300
 IMAGE_HEIGHT = 400
 N_TRIANGLES = 100
 AlphaRange = tuple[int, int]
-TRIANGLE_ALPHA_RANGE: AlphaRange = (20, 255)
+TRIANGLE_ALPHA_RANGE: AlphaRange = (5, 255)
 
 
 @dataclass
@@ -25,79 +25,45 @@ class Triangle:
     a: int
 
 
-def clamp_triangle_edges(
-    triangle: Triangle,
-    max_edge_length: int,
-    image_width: int,
-    image_height: int,
-) -> None:
-    """Clamps triangle vertices in-place so no edge exceeds max_edge_length.
-
-    Fixes each edge by pulling the farther vertex toward the anchor along the
-    edge direction. Vertices are also kept within image bounds.
-    """
-
-    def _shorten(ax: int, ay: int, bx: int, by: int) -> tuple[int, int]:
-        dx, dy = bx - ax, by - ay
-        length = (dx * dx + dy * dy) ** 0.5
-        if length <= max_edge_length:
-            return bx, by
-        scale = max_edge_length / length
-        nx = int(round(ax + dx * scale))
-        ny = int(round(ay + dy * scale))
-        return (
-            max(0, min(image_width - 1, nx)),
-            max(0, min(image_height - 1, ny)),
-        )
-
-    triangle.x2, triangle.y2 = _shorten(triangle.x1, triangle.y1, triangle.x2, triangle.y2)
-    triangle.x3, triangle.y3 = _shorten(triangle.x1, triangle.y1, triangle.x3, triangle.y3)
-    triangle.x3, triangle.y3 = _shorten(triangle.x2, triangle.y2, triangle.x3, triangle.y3)
-
-
 def create_random_triangle(
     image_width: int = IMAGE_WIDTH,
     image_height: int = IMAGE_HEIGHT,
     triangle_alpha_range: AlphaRange = TRIANGLE_ALPHA_RANGE,
-    max_edge_length: int | None = None,
+    target: np.ndarray | None = None,
+    seeded: bool = False,
 ) -> Triangle:
     """
-    Creates one random triangle.
+    Creates one triangle with random geometry and optional target-biased color.
 
     Each triangle is defined by:
     - three vertices: (x1, y1), (x2, y2), (x3, y3)
     - one RGBA color: (r, g, b, a)
-
-    When max_edge_length is set, all vertices are placed within
-    max_edge_length // 2 of a random center point.
     """
 
-    min_alpha, max_alpha = validate_triangle_alpha_range(triangle_alpha_range)
-
-    if max_edge_length is not None:
-        r = max(1, max_edge_length // 2)
-        cx = int(np.random.randint(0, image_width))
-        cy = int(np.random.randint(0, image_height))
-        x1 = int(np.clip(cx + np.random.randint(-r, r + 1), 0, image_width - 1))
-        y1 = int(np.clip(cy + np.random.randint(-r, r + 1), 0, image_height - 1))
-        x2 = int(np.clip(cx + np.random.randint(-r, r + 1), 0, image_width - 1))
-        y2 = int(np.clip(cy + np.random.randint(-r, r + 1), 0, image_height - 1))
-        x3 = int(np.clip(cx + np.random.randint(-r, r + 1), 0, image_width - 1))
-        y3 = int(np.clip(cy + np.random.randint(-r, r + 1), 0, image_height - 1))
-    else:
-        x1 = int(np.random.randint(0, image_width))
-        y1 = int(np.random.randint(0, image_height))
-        x2 = int(np.random.randint(0, image_width))
-        y2 = int(np.random.randint(0, image_height))
-        x3 = int(np.random.randint(0, image_width))
-        y3 = int(np.random.randint(0, image_height))
+    x1 = int(np.random.randint(0, image_width))
+    y1 = int(np.random.randint(0, image_height))
+    x2 = int(np.random.randint(0, image_width))
+    y2 = int(np.random.randint(0, image_height))
+    x3 = int(np.random.randint(0, image_width))
+    y3 = int(np.random.randint(0, image_height))
+    r, g, b = _create_random_rgb(
+        target=target,
+        seeded=seeded,
+        image_width=image_width,
+        image_height=image_height,
+    )
 
     return Triangle(
-        x1=x1, y1=y1, x2=x2, y2=y2, x3=x3, y3=y3,
-        r=int(np.random.randint(0, 256)),
-        g=int(np.random.randint(0, 256)),
-        b=int(np.random.randint(0, 256)),
-        a=int(np.random.randint(min_alpha, max_alpha + 1)),
+        x1=x1,
+        y1=y1,
+        x2=x2,
+        y2=y2,
+        x3=x3,
+        y3=y3,
+        r=r,
+        g=g,
+        b=b,
+        a=sample_alpha(triangle_alpha_range=triangle_alpha_range),
     )
 
 
@@ -106,10 +72,11 @@ def create_random_individual(
     image_width: int = IMAGE_WIDTH,
     image_height: int = IMAGE_HEIGHT,
     triangle_alpha_range: AlphaRange = TRIANGLE_ALPHA_RANGE,
-    max_edge_length: int | None = None,
+    target: np.ndarray | None = None,
+    seeded: bool = False,
 ) -> list[Triangle]:
     """
-    Creates one individual.
+    Creates one individual with random or target-biased triangle colors.
 
     One individual represents a complete candidate image composed of
     multiple triangles.
@@ -120,7 +87,8 @@ def create_random_individual(
             image_width=image_width,
             image_height=image_height,
             triangle_alpha_range=triangle_alpha_range,
-            max_edge_length=max_edge_length,
+            target=target,
+            seeded=seeded,
         )
         for _ in range(n_triangles)
     ]
@@ -132,10 +100,11 @@ def create_population(
     image_width: int = IMAGE_WIDTH,
     image_height: int = IMAGE_HEIGHT,
     triangle_alpha_range: AlphaRange = TRIANGLE_ALPHA_RANGE,
-    max_edge_length: int | None = None,
+    target: np.ndarray | None = None,
+    seeded: bool = False,
 ) -> list[list[Triangle]]:
     """
-    Generates the initial population for the Genetic Algorithm.
+    Generates a random or target-biased population for the Genetic Algorithm.
 
     Each individual in the population is a candidate solution composed of
     multiple triangles.
@@ -147,7 +116,8 @@ def create_population(
             image_width=image_width,
             image_height=image_height,
             triangle_alpha_range=triangle_alpha_range,
-            max_edge_length=max_edge_length,
+            target=target,
+            seeded=seeded,
         )
         for _ in range(population_size)
     ]
@@ -159,7 +129,6 @@ def create_target_seeded_population(
     n_triangles: int = N_TRIANGLES,
     image_width: int = IMAGE_WIDTH,
     image_height: int = IMAGE_HEIGHT,
-    max_edge_length: int | None = None,
 ) -> list[list[Triangle]]:
     """Creates a population where each triangle's color is sampled from the target image.
 
@@ -171,27 +140,33 @@ def create_target_seeded_population(
     for _ in range(population_size):
         individual = []
         for _ in range(n_triangles):
-            if max_edge_length is not None:
-                r = max(1, max_edge_length // 2)
-                cx = int(np.random.randint(0, image_width))
-                cy = int(np.random.randint(0, image_height))
-                x1 = int(np.clip(cx + np.random.randint(-r, r + 1), 0, image_width - 1))
-                y1 = int(np.clip(cy + np.random.randint(-r, r + 1), 0, image_height - 1))
-                x2 = int(np.clip(cx + np.random.randint(-r, r + 1), 0, image_width - 1))
-                y2 = int(np.clip(cy + np.random.randint(-r, r + 1), 0, image_height - 1))
-                x3 = int(np.clip(cx + np.random.randint(-r, r + 1), 0, image_width - 1))
-                y3 = int(np.clip(cy + np.random.randint(-r, r + 1), 0, image_height - 1))
-            else:
-                x1 = int(np.random.randint(0, image_width))
-                y1 = int(np.random.randint(0, image_height))
-                x2 = int(np.random.randint(0, image_width))
-                y2 = int(np.random.randint(0, image_height))
-                x3 = int(np.random.randint(0, image_width))
-                y3 = int(np.random.randint(0, image_height))
+            x1 = int(np.random.randint(0, image_width))
+            y1 = int(np.random.randint(0, image_height))
+            x2 = int(np.random.randint(0, image_width))
+            y2 = int(np.random.randint(0, image_height))
+            x3 = int(np.random.randint(0, image_width))
+            y3 = int(np.random.randint(0, image_height))
             sx = int(np.random.randint(0, image_width))
             sy = int(np.random.randint(0, image_height))
-            r_c, g_c, b_c = int(target[sy, sx, 0]), int(target[sy, sx, 1]), int(target[sy, sx, 2])
-            individual.append(Triangle(x1=x1, y1=y1, x2=x2, y2=y2, x3=x3, y3=y3, r=r_c, g=g_c, b=b_c, a=255))
+            r, g, b = (
+                int(target[sy, sx, 0]),
+                int(target[sy, sx, 1]),
+                int(target[sy, sx, 2]),
+            )
+            individual.append(
+                Triangle(
+                    x1=x1,
+                    y1=y1,
+                    x2=x2,
+                    y2=y2,
+                    x3=x3,
+                    y3=y3,
+                    r=r,
+                    g=g,
+                    b=b,
+                    a=255,
+                )
+            )
         result.append(individual)
     return result
 
@@ -218,3 +193,59 @@ def validate_triangle_alpha_range(
         )
 
     return min_alpha, max_alpha
+
+
+def sample_alpha(
+    triangle_alpha_range: AlphaRange = TRIANGLE_ALPHA_RANGE,
+) -> int:
+    """Samples one alpha value uniformly from the configured range."""
+
+    min_alpha, max_alpha = validate_triangle_alpha_range(triangle_alpha_range)
+
+    return int(np.random.randint(min_alpha, max_alpha + 1))
+
+
+def _create_random_rgb(
+    target: np.ndarray | None,
+    seeded: bool,
+    image_width: int,
+    image_height: int,
+) -> tuple[int, int, int]:
+    """Samples RGB uniformly or from a random target pixel."""
+
+    if not seeded:
+        return (
+            int(np.random.randint(0, 256)),
+            int(np.random.randint(0, 256)),
+            int(np.random.randint(0, 256)),
+        )
+
+    seed_target = _validate_seed_target(
+        target=target,
+        image_width=image_width,
+        image_height=image_height,
+    )
+    sample_x = int(np.random.randint(0, image_width))
+    sample_y = int(np.random.randint(0, image_height))
+    sampled_rgb = seed_target[sample_y, sample_x]
+
+    return int(sampled_rgb[0]), int(sampled_rgb[1]), int(sampled_rgb[2])
+
+
+def _validate_seed_target(
+    target: np.ndarray | None,
+    image_width: int,
+    image_height: int,
+) -> np.ndarray:
+    """Validates the RGB target used for seeded triangle colors."""
+
+    if target is None:
+        raise ValueError("target must be provided when seeded=True.")
+    if not isinstance(target, np.ndarray):
+        raise ValueError("target must be a NumPy array when seeded=True.")
+    if target.ndim != 3 or target.shape[2] != 3:
+        raise ValueError("target must have shape (image_height, image_width, 3).")
+    if target.shape[0] != image_height or target.shape[1] != image_width:
+        raise ValueError("target dimensions must match image_height and image_width.")
+
+    return target

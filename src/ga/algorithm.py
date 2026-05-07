@@ -11,7 +11,8 @@ from . import evaluation, logs, selection
 
 Individual = list[population.Triangle]
 FitnessFunction = evaluation.FitnessFunction
-CrossoverFunction = Callable[[Individual, Individual, float], Individual]
+CrossoverResult = Individual | tuple[Individual, ...] | list[Individual]
+CrossoverFunction = Callable[[Individual, Individual, float], CrossoverResult]
 MutationFunction = Callable[
     [Individual, float, int, int, population.AlphaRange], Individual
 ]
@@ -23,11 +24,13 @@ ProgressCallback = Callable[[logs.GenerationLog], None]
 
 class GeneticAlgorithm:
     """
-    Evolves triangle-based images to minimize a target-image fitness function.
+    Evolves triangle-based image candidates toward lower fitness.
 
-    The class owns population initialization, parent selection, optional
-    crossover/mutation operators, sequential or parallel fitness evaluation,
-    global-best tracking, and optional in-memory run logs.
+    Each individual is a complete candidate image with ``n_triangles`` triangles.
+    The algorithm maintains ``population_size`` individuals per generation,
+    evaluates their rendered images, tracks the global best individual, and
+    optionally applies elitism, crossover, mutation, adaptive mutation, random
+    immigrants, seeded RGB initialization, progress callbacks, and run logs.
     """
 
     @staticmethod
@@ -139,11 +142,10 @@ class GeneticAlgorithm:
         stagnation_window: int = 8,
         random_immigrants: int = 0,
         initial_population: list[Individual] | None = None,
+        seeded: bool = False,
         progress: bool = False,
         progress_interval: int = 1,
         progress_callback: ProgressCallback | None = None,
-        local_search_steps: int = 0,
-        max_edge_length: int | None = None,
     ) -> None:
         """
         Configures a genetic image approximation run.
@@ -158,7 +160,8 @@ class GeneticAlgorithm:
             elitism: Number of best individuals copied unchanged per generation.
             selection_type: Parent selection strategy handled by ``selection``.
             logs: Whether to populate ``run_logs`` after ``run()``.
-            crossover_function: Optional operator returning one child individual.
+            crossover_function: Optional operator returning one child individual
+                or multiple child individuals.
             mutation_function: Optional operator returning one mutated individual.
             evaluation_backend: ``sequential``, ``thread``, or ``process``.
             n_jobs: Optional worker count for thread or process evaluation.
@@ -169,12 +172,11 @@ class GeneticAlgorithm:
             mutation_rate_bounds: Optional adaptive mutation min/max rate.
             stagnation_window: Generations without improvement before mutation boost.
             random_immigrants: Number of random individuals injected each generation.
-            initial_population: Optional seeded population for generation 0.
+            initial_population: Optional explicit population for generation 0.
+            seeded: Whether generation-0 random triangles sample target RGB values.
             progress: If ``True``, prints one-line generation summaries.
             progress_interval: Print frequency when ``progress`` is enabled.
             progress_callback: Optional callback receiving per-generation telemetry.
-            local_search_steps: Hill-climbing steps applied to the best individual each generation.
-            max_edge_length: If set, no triangle edge may exceed this pixel length.
 
         Raises:
             ValueError: If dimensions, rates, alpha range, backend, worker
@@ -198,8 +200,6 @@ class GeneticAlgorithm:
             raise ValueError("stagnation_window must be greater than zero.")
         if progress_interval <= 0:
             raise ValueError("progress_interval must be greater than zero.")
-        if local_search_steps < 0:
-            raise ValueError("local_search_steps must be non-negative.")
         if progress_callback is not None and not callable(progress_callback):
             raise ValueError("progress_callback must be callable when provided.")
 
@@ -250,11 +250,10 @@ class GeneticAlgorithm:
             initial_population,
             n_triangles=n_triangles,
         )
+        self.seeded = seeded
         self.progress = progress
         self.progress_interval = progress_interval
         self.progress_callback = progress_callback
-        self.local_search_steps = local_search_steps
-        self.max_edge_length = max_edge_length
         self.image_height, self.image_width = self.target.shape[:2]
 
         self.population: list[Individual] = []
@@ -265,33 +264,8 @@ class GeneticAlgorithm:
         self._current_mutation_rate = self.mutation_rate
         self._last_improvement_generation = 0
 
-    def params_dict(self) -> dict:
-        """Returns all constructor parameters as a plain dict for logging."""
-
-        return {
-            "population_size": self.population_size,
-            "generations": self.generations,
-            "n_triangles": self.n_triangles,
-            "crossover_rate": self.crossover_rate,
-            "mutation_rate": self.mutation_rate,
-            "mutation_function": getattr(self.mutation_function, "__name__", None),
-            "crossover_function": getattr(self.crossover_function, "__name__", None),
-            "elitism": self.elitism,
-            "selection_type": self.selection_type,
-            "adaptive_mutation": self.adaptive_mutation,
-            "mutation_rate_bounds": list(self.mutation_rate_bounds) if self.mutation_rate_bounds else None,
-            "stagnation_window": self.stagnation_window,
-            "random_immigrants": self.random_immigrants,
-            "local_search_steps": self.local_search_steps,
-            "max_edge_length": self.max_edge_length,
-            "triangle_alpha_range": list(self.triangle_alpha_range),
-            "evaluation_backend": self.evaluation_backend,
-            "n_jobs": self.n_jobs,
-            "initialization": "seeded" if self.initial_population is not None else "random",
-        }
-
     def initialize(self) -> None:
-        """Creates the initial population and resets run state."""
+        """Creates generation-0 population and resets run state."""
 
         if self.initial_population is None:
             self.population = population.create_population(
@@ -300,7 +274,8 @@ class GeneticAlgorithm:
                 image_width=self.image_width,
                 image_height=self.image_height,
                 triangle_alpha_range=self.triangle_alpha_range,
-                max_edge_length=self.max_edge_length,
+                target=self.target,
+                seeded=self.seeded,
             )
         else:
             seeded = copy.deepcopy(self.initial_population[: self.population_size])
@@ -312,7 +287,8 @@ class GeneticAlgorithm:
                         image_width=self.image_width,
                         image_height=self.image_height,
                         triangle_alpha_range=self.triangle_alpha_range,
-                        max_edge_length=self.max_edge_length,
+                        target=self.target,
+                        seeded=self.seeded,
                     )
                 )
             self.population = seeded
@@ -436,7 +412,6 @@ class GeneticAlgorithm:
                 image_width=self.image_width,
                 image_height=self.image_height,
                 triangle_alpha_range=self.triangle_alpha_range,
-                max_edge_length=self.max_edge_length,
             )
         )
         return immigrant_count
@@ -455,16 +430,32 @@ class GeneticAlgorithm:
         self,
         parent1: Individual,
         parent2: Individual,
-    ) -> Individual:
-        """Applies the configured crossover function when one is provided."""
+    ) -> list[Individual]:
+        """Applies the configured crossover function and normalizes its children."""
 
         if self.crossover_function is None:
             fallback_parent = parent1 if np.random.random() < 0.5 else parent2
-            return copy.deepcopy(fallback_parent)
+            return [copy.deepcopy(fallback_parent)]
 
-        child = self.crossover_function(parent1, parent2, self.crossover_rate)
+        crossover_result = self.crossover_function(
+            parent1,
+            parent2,
+            self.crossover_rate,
+        )
+        if isinstance(crossover_result, tuple):
+            children = list(crossover_result)
+        elif crossover_result and isinstance(
+            crossover_result[0],
+            population.Triangle,
+        ):
+            children = [crossover_result]
+        else:
+            children = list(crossover_result)
 
-        return copy.deepcopy(child)
+        if not children:
+            raise ValueError("crossover_function must return at least one child.")
+
+        return copy.deepcopy(children)
 
     def mutate(self, individual: Individual) -> tuple[Individual, int]:
         """Applies the configured mutation function when one is provided."""
@@ -480,12 +471,6 @@ class GeneticAlgorithm:
             self.image_height,
             self.triangle_alpha_range,
         )
-        if self.max_edge_length is not None:
-            for triangle in mutated_individual:
-                population.clamp_triangle_edges(
-                    triangle, self.max_edge_length, self.image_width, self.image_height
-                )
-
         changed_triangles = self._count_changed_triangles(
             before_mutation=before_mutation,
             after_mutation=mutated_individual,
@@ -513,40 +498,6 @@ class GeneticAlgorithm:
             f"mutated_offspring={generation_log['mutated_offspring']} | "
             f"mutated_triangles={generation_log['mutated_triangles']}"
         )
-
-    def _run_local_search(
-        self,
-        individual: Individual,
-        fitness_value: float,
-    ) -> tuple[Individual, float]:
-        """Hill-climbs on one individual, accepting only improvements."""
-
-        current = copy.deepcopy(individual)
-        current_fitness = float(fitness_value)
-
-        for _ in range(self.local_search_steps):
-            candidate = copy.deepcopy(current)
-            idx = int(np.random.randint(0, len(candidate)))
-            t = candidate[idx]
-            delta = 20
-            t.x1 = max(0, min(self.image_width - 1, t.x1 + int(np.random.randint(-delta, delta + 1))))
-            t.y1 = max(0, min(self.image_height - 1, t.y1 + int(np.random.randint(-delta, delta + 1))))
-            t.x2 = max(0, min(self.image_width - 1, t.x2 + int(np.random.randint(-delta, delta + 1))))
-            t.y2 = max(0, min(self.image_height - 1, t.y2 + int(np.random.randint(-delta, delta + 1))))
-            t.x3 = max(0, min(self.image_width - 1, t.x3 + int(np.random.randint(-delta, delta + 1))))
-            t.y3 = max(0, min(self.image_height - 1, t.y3 + int(np.random.randint(-delta, delta + 1))))
-            t.r = max(0, min(255, t.r + int(np.random.randint(-30, 31))))
-            t.g = max(0, min(255, t.g + int(np.random.randint(-30, 31))))
-            t.b = max(0, min(255, t.b + int(np.random.randint(-30, 31))))
-            candidate_fitness = evaluation.compute_individual_fitness(
-                candidate, self.target, self.fitness_function,
-                self.image_width, self.image_height,
-            )
-            if candidate_fitness < current_fitness:
-                current = candidate
-                current_fitness = candidate_fitness
-
-        return current, current_fitness
 
     def run(self) -> tuple[float, list[float]]:
         """
@@ -585,15 +536,6 @@ class GeneticAlgorithm:
                 if global_best_fitness < previous_best:
                     self._last_improvement_generation = generation
 
-                if self.local_search_steps > 0 and self.best_individual is not None:
-                    improved, improved_fitness = self._run_local_search(
-                        self.best_individual, self.best_fitness
-                    )
-                    if improved_fitness < self.best_fitness:
-                        self.best_fitness = improved_fitness
-                        self.best_individual = improved
-                        global_best_fitness = improved_fitness
-
                 self._update_mutation_rate(generation)
                 self.history.append(global_best_fitness)
                 offspring_created = 0
@@ -611,13 +553,16 @@ class GeneticAlgorithm:
                     while len(next_population) < self.population_size:
                         parent1 = self.select_parent(fitness_values)
                         parent2 = self.select_parent(fitness_values)
-                        child = self.crossover(parent1, parent2)
-                        child, changed_triangles = self.mutate(child)
-                        offspring_created += 1
-                        mutated_triangles += changed_triangles
-                        if changed_triangles > 0:
-                            mutated_offspring += 1
-                        next_population.append(child)
+                        children = self.crossover(parent1, parent2)
+                        for child in children:
+                            if len(next_population) >= self.population_size:
+                                break
+                            child, changed_triangles = self.mutate(child)
+                            offspring_created += 1
+                            mutated_triangles += changed_triangles
+                            if changed_triangles > 0:
+                                mutated_offspring += 1
+                            next_population.append(child)
 
                     self.population = next_population[: self.population_size]
 

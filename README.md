@@ -6,25 +6,25 @@ Notebook-first prototype for approximating a target image with semi-transparent 
 
 - Core prototype pipeline is working across image loading, population generation, rendering, fitness evaluation, and GA orchestration.
 - The intended workflow is notebook-based, centered on [notebooks/Exploration.ipynb](notebooks/Exploration.ipynb).
-- Active modules are `src.load_image`, `src.population`, `src.rendering`, `src.ga.fitness`, `src.ga.GeneticAlgorithm`, `src.ga.workflow`, and `src.ga.legacy`.
+- Active modules are `src.load_image`, `src.population`, `src.rendering`, `src.ga.fitness`, `src.ga.GeneticAlgorithm`, and `src.ga.workflow`.
 - `src.ga.fitness` includes RMSE fitness helpers.
 - `src.ga.fitness` also provides RMSE+structure fitness helpers for richer guidance.
 - `GeneticAlgorithm.run()` returns `(best_fitness, history)`. The best triangle configuration is available separately as `ga.best_individual`.
 - `GeneticAlgorithm` can stream per-generation progress to notebooks and reports mutation telemetry in generation logs.
-- `GeneticAlgorithm` supports optional crossover and mutation callbacks. `crossover_rate` and `mutation_rate` are only required when the matching callback is provided.
+- `GeneticAlgorithm` supports optional crossover and mutation callbacks. Crossover callbacks may return one child or multiple children. `crossover_rate` and `mutation_rate` are only required when the matching callback is provided.
 - `GeneticAlgorithm` supports `triangle_alpha_range` to control triangle transparency during initialization and mutation.
+- `GeneticAlgorithm` supports `seeded=True` to initialize triangle RGB values from random target-image pixels.
 - Fitness evaluation is sequential by default. `thread` is the notebook-compatible parallel backend; `process` exists but is less reliable inside notebooks.
 - GA backend evaluation mechanics live in `src/ga/evaluation.py`, and run-log formatting lives in `src/ga/logs.py`.
 - See [GeneticAlgorithm.md](GeneticAlgorithm.md) for full class configuration and behavior details.
 - `src/ga/cross_over.py` and `src/ga/mutate.py` contain optional operator examples for triangle individuals.
 - `src/ga/workflow.py` provides staged triangle-count orchestration for notebook experiments.
-- `src/ga/legacy.py` provides a legacy-style high-quality pipeline (opaque triangles, seeded colors, adaptive Gaussian mutation, diversity injection, and local search).
-- Validation is currently based on compile/import/smoke checks. There is not yet a formal automated test suite.
+- Validation includes focused unit tests plus compile/import/smoke checks.
 
 ## Current Workflow
 
 1. Load the target image with `src.load_image.load_target_image(...)`.
-2. Create random individuals or populations with `src.population`.
+2. Create random or target-biased individuals and populations with configurable alpha ranges through `src.population`.
 3. Render an individual for visualization with `src.rendering.render_individual(...)`.
 4. Convert the generated image to an array with `src.rendering.image_to_array(...)`.
 5. Evaluate the generated array against the target with `src.ga.fitness.compute_rmse(...)` or another compatible fitness function.
@@ -66,7 +66,8 @@ ga = GeneticAlgorithm(
     population_size=100,
     generations=50,
     elitism=2,
-    triangle_alpha_range=(20, 255),
+    triangle_alpha_range=(5, 255),
+    seeded=True,
     logs=True,
 )
 
@@ -76,6 +77,22 @@ run_logs = ga.run_logs
 ```
 
 `best_fitness` is the lowest fitness found during the run. `history` contains the global best fitness after each generation. `best_individual` is the best triangle configuration found globally.
+
+### Seeded RGB Initialization
+
+Set `seeded=True` to initialize generation-0 triangle colors from exact RGB triplets sampled from random target pixels:
+
+```python
+ga = GeneticAlgorithm(
+    target=target_image,
+    fitness_function=fitness.compute_rmse,
+    population_size=100,
+    generations=50,
+    seeded=True,
+)
+```
+
+Seeded initialization keeps triangle vertices random, samples alpha uniformly from `triangle_alpha_range`, and applies only when generation 0 is created or backfilled from a short `initial_population`. `random_immigrants` remain fully random in later generations.
 
 ### Live Progress Tracking in Notebooks
 
@@ -126,7 +143,7 @@ ga = GeneticAlgorithm(
 )
 ```
 
-The default is `(20, 255)`, which preserves the original behavior and avoids fully invisible triangles by default. Use `(255, 255)` for fully opaque triangles or `(0, 255)` to allow the full alpha range. Mutation operators receive the same range so mutated alpha values stay within the configured bounds.
+The default is `(5, 255)`, which avoids fully invisible triangles by default. Initial alpha values are sampled uniformly from the configured range. Use `(255, 255)` for fully opaque triangles or `(0, 255)` to allow the full alpha range. Mutation operators receive the same range so mutated alpha values stay within the configured bounds.
 
 ### Richer Fitness (RMSE + Structure)
 
@@ -190,6 +207,7 @@ stages = [
         crossover_rate=0.85,
         adaptive_mutation=True,
         mutation_rate_bounds=(0.06, 0.22),
+        stagnation_window=12,
         random_immigrants=6,
     ),
     StageConfig(
@@ -199,6 +217,7 @@ stages = [
         crossover_rate=0.85,
         adaptive_mutation=True,
         mutation_rate_bounds=(0.03, 0.16),
+        stagnation_window=18,
         random_immigrants=4,
     ),
     StageConfig(
@@ -208,6 +227,7 @@ stages = [
         crossover_rate=0.8,
         adaptive_mutation=True,
         mutation_rate_bounds=(0.02, 0.12),
+        stagnation_window=24,
         random_immigrants=2,
     ),
 ]
@@ -220,6 +240,7 @@ result = run_staged_triangle_optimization(
     elitism=2,
     crossover_function=cross_over.two_point_crossover,
     mutation_function=mutate.volatile_triangle_mutation,
+    seeded=True,
 )
 
 best_fitness = result.best_fitness
@@ -228,44 +249,7 @@ best_individual = result.best_individual
 stage_results = result.stage_results
 ```
 
-### Legacy-Style High-Quality Pipeline
-
-If your previous project performed better with opaque triangles and stronger stagnation handling, use this runner:
-
-```python
-from src.ga import LegacyPipelineConfig, fitness, run_legacy_pipeline
-
-legacy_config = LegacyPipelineConfig(
-    population_size=200,
-    generations=400,
-    n_triangles=100,
-    elitism_fraction=0.2,
-    tournament_size=3,
-    mutation_rate=0.15,
-    position_sigma=0.05,
-    color_sigma=0.08,
-    stagnation_boost_window=15,
-    diversity_window=30,
-    local_search_steps=50,
-    evaluation_backend="process",
-    n_jobs=8,
-    chunksize=8,
-    seed=42,
-    progress=True,
-    progress_interval=10,
-)
-
-legacy_result = run_legacy_pipeline(
-    target=target_image,
-    config=legacy_config,
-    fitness_function=fitness.compute_rmse,
-)
-
-best_fitness = legacy_result.best_fitness
-history = legacy_result.history
-best_individual = legacy_result.best_individual
-generation_logs = legacy_result.generation_logs
-```
+`StageConfig.stagnation_window` is configured per stage and defaults to `8`, matching `GeneticAlgorithm`.
 
 ### Optional Genetic Operators
 
@@ -315,6 +299,8 @@ def my_mutation(
 ):
     ...
 ```
+
+`my_crossover(...)` may return a single child individual or a tuple/list of child individuals. `GeneticAlgorithm` will consume as many children as needed to fill the next population.
 
 ## Parallel Evaluation
 
@@ -374,7 +360,7 @@ Parallel evaluation details:
 ## Current Limitations
 
 - The project is still prototype-focused and notebook-first.
-- There is no formal automated test suite beyond compile/import/smoke checks.
+- Automated coverage is still focused on initialization behavior, operator compatibility, and smoke checks.
 - GA logs are stored in memory only and there is no persistence or visualization layer yet.
 - Process evaluation is not optimized for the notebook-only workflow.
 - Rendering is still PIL-based and may become the next performance bottleneck after evaluation parallelism.
@@ -382,7 +368,7 @@ Parallel evaluation details:
 
 ## Immediate Next Steps
 
-- Add formal tests for GA evaluation backends, fitness ordering, logging, and best-individual tracking.
+- Expand formal tests for GA evaluation backends, fitness ordering, logging, and best-individual tracking.
 - Implement production crossover and mutation operators in `src/ga/cross_over.py` and `src/ga/mutate.py`.
 - Add notebook cells for comparing sequential and thread evaluation timings.
 - Add output saving for best rendered images, run metadata, and generation summaries.
@@ -394,7 +380,6 @@ Parallel evaluation details:
 - `README.md`: Project overview, notebook workflow, setup instructions, progress status, limitations, and maintained file tree.
 - `GeneticAlgorithm.md`: Detailed notebook-first reference for `src.ga.GeneticAlgorithm`.
 - `src/ga/workflow.py`: Staged optimization helpers (`StageConfig`, `run_staged_triangle_optimization`).
-- `src/ga/legacy.py`: Legacy-style GA runner (`LegacyPipelineConfig`, `run_legacy_pipeline`).
 - `AGENTS.md`: Repository instructions for GA terminology, API expectations, and project conventions.
 - `main.py`: Minimal CLI entrypoint used for simple environment smoke checks.
 - `pyproject.toml`: Project metadata and dependency declarations managed with `uv`.
@@ -405,14 +390,20 @@ Parallel evaluation details:
 - `notebooks/Exploration.ipynb`: Notebook for exploring rendering, fitness evaluation, package imports, and GA setup.
 - `src/__init__.py`: Exposes the main package submodules and the `src.ga` package.
 - `src/load_image.py`: Loads and resizes target images into NumPy arrays.
-- `src/population.py`: Defines triangles, image constants, and random factories for individuals and populations.
+- `src/population.py`: Defines triangles, image constants, alpha sampling, and random or target-biased factories for individuals and populations.
 - `src/rendering.py`: Renders individuals and converts rendered output to arrays.
 - `src/ga/AGENTS.md`: Package-specific instructions for GA fitness, operators, and run API conventions.
 - `src/ga/__init__.py`: Exports the public `GeneticAlgorithm` class, fitness helpers, and operator modules.
 - `src/ga/algorithm.py`: Orchestrates GA state, optional operators, global-best history, and generation flow.
 - `src/ga/cross_over.py`: Contains crossover operator examples for triangle individuals.
 - `src/ga/evaluation.py`: Computes ordered fitness values with sequential, thread, or process evaluation backends.
-- `src/ga/fitness.py`: Computes RMSE between target and generated images.
+- `src/ga/fitness.py`: Computes RMSE and RMSE+structure fitness values between target and generated images.
 - `src/ga/logs.py`: Builds per-generation and run-level GA log dictionaries.
 - `src/ga/mutate.py`: Contains mutation operator examples for triangle individuals.
 - `src/ga/selection.py`: Implements tournament, ranking, and roulette-wheel parent selection strategies.
+- `tests/test_seeded_initialization.py`: Unit tests for seeded RGB and alpha-range population initialization.
+- `tests/test_rmse_structure_fitness.py`: Unit tests for RMSE+structure fitness factory and process-backend compatibility.
+- `tests/test_selection.py`: Unit tests for parent selection dispatch and tournament-size keyword handling.
+- `tests/test_crossover_children.py`: Regression tests for single-child and multi-child crossover compatibility in `GeneticAlgorithm`.
+- `tests/test_workflow.py`: Regression tests for staged-workflow validation and `GeneticAlgorithm` parameter forwarding.
+- `tests/test_imports.py`: Import smoke tests for the top-level package and the cleaned `src.ga` public API.

@@ -44,7 +44,11 @@ def select_parent(
     normalized_type = normalize_selection_type(selection_type)
 
     if normalized_type == "tournament":
-        return tournament_selection(population_data, fitness_values, k=tournament_size)
+        return tournament_selection(
+            population_data,
+            fitness_values,
+            tournament_size=tournament_size,
+        )
     if normalized_type == "ranking":
         return ranking_selection(population_data, fitness_values)
 
@@ -52,15 +56,19 @@ def select_parent(
 
 
 def tournament_selection(
-    population_data: list[Individual], fitness_values: list[float], k: int = 3
+    population_data: list[Individual],
+    fitness_values: list[float],
+    tournament_size: int = 4,
 ) -> Individual:
     """Selects a parent using tournament selection."""
 
-    if k <= 0:
-        raise ValueError("k must be positive.")
+    if tournament_size <= 0:
+        raise ValueError("tournament_size must be positive.")
 
-    replace = len(population_data) < k
-    candidate_indices = np.random.choice(len(population_data), size=k, replace=replace)
+    replace = len(population_data) < tournament_size
+    candidate_indices = np.random.choice(
+        len(population_data), size=tournament_size, replace=replace
+    )
     best_index = min(candidate_indices, key=lambda index: fitness_values[int(index)])
 
     return population_data[int(best_index)]
