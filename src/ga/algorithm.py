@@ -265,6 +265,31 @@ class GeneticAlgorithm:
         self._current_mutation_rate = self.mutation_rate
         self._last_improvement_generation = 0
 
+    def params_dict(self) -> dict:
+        """Returns all constructor parameters as a plain dict for logging."""
+
+        return {
+            "population_size": self.population_size,
+            "generations": self.generations,
+            "n_triangles": self.n_triangles,
+            "crossover_rate": self.crossover_rate,
+            "mutation_rate": self.mutation_rate,
+            "mutation_function": getattr(self.mutation_function, "__name__", None),
+            "crossover_function": getattr(self.crossover_function, "__name__", None),
+            "elitism": self.elitism,
+            "selection_type": self.selection_type,
+            "adaptive_mutation": self.adaptive_mutation,
+            "mutation_rate_bounds": list(self.mutation_rate_bounds) if self.mutation_rate_bounds else None,
+            "stagnation_window": self.stagnation_window,
+            "random_immigrants": self.random_immigrants,
+            "local_search_steps": self.local_search_steps,
+            "max_edge_length": self.max_edge_length,
+            "triangle_alpha_range": list(self.triangle_alpha_range),
+            "evaluation_backend": self.evaluation_backend,
+            "n_jobs": self.n_jobs,
+            "initialization": "seeded" if self.initial_population is not None else "random",
+        }
+
     def initialize(self) -> None:
         """Creates the initial population and resets run state."""
 

@@ -173,6 +173,28 @@ class HybridPSOGA:
         self.progress_interval = progress_interval
         self.image_height, self.image_width = self.target.shape[:2]
 
+    def params_dict(self) -> dict:
+        """Returns all constructor parameters as a plain dict for logging."""
+
+        return {
+            "population_size": self.population_size,
+            "generations": self.generations,
+            "n_triangles": self.n_triangles,
+            "inertia": self.inertia,
+            "inertia_min": self.inertia_min,
+            "c1": self.c1,
+            "c2": self.c2,
+            "crossover_rate": self.crossover_rate,
+            "crossover_function": getattr(self.crossover_function, "__name__", None),
+            "mutation_rate": self.mutation_rate,
+            "mutation_function": getattr(self.mutation_function, "__name__", None),
+            "local_search_steps": self.local_search_steps,
+            "max_edge_length": self.max_edge_length,
+            "evaluation_backend": self.evaluation_backend,
+            "n_jobs": self.n_jobs,
+            "initialization": "seeded" if self.initial_population is not None else "random",
+        }
+
         dims = n_triangles * _ATTRS_PER_TRIANGLE
         tile = [
             self.image_width - 1, self.image_height - 1,
