@@ -85,45 +85,6 @@ def two_point_crossover(
 # ----------------------------------
 # Two children cross-over
 # ----------------------------------
-def single_point_crossover_two_children(
-    parent1: list[population.Triangle],
-    parent2: list[population.Triangle],
-    crossover_rate: float,
-) -> tuple[list[population.Triangle], list[population.Triangle]]:
-    """Creates two children using single-point triangle-level crossover.
-
-    Splits both parents at a single random point and returns the two
-    complementary recombinations:
-
-        child1 = parent1[:point] + parent2[point:]
-        child2 = parent2[:point] + parent1[point:]
-
-    This preserves more genetic material from both parents than producing
-    only one child.
-
-    Args:
-        parent1: First parent individual (list of Triangles).
-        parent2: Second parent individual (list of Triangles).
-        crossover_rate: Probability of performing crossover. If not
-            triggered, deep copies of both parents are returned.
-
-    Returns:
-        A tuple containing two new child individuals.
-    """
-    if len(parent1) < 2 or len(parent2) < 2:
-        return copy.deepcopy(parent1), copy.deepcopy(parent2)
-
-    if np.random.random() >= crossover_rate:
-        return copy.deepcopy(parent1), copy.deepcopy(parent2)
-
-    min_len = min(len(parent1), len(parent2))
-    crossover_point = int(np.random.randint(1, min_len))
-
-    child1 = parent1[:crossover_point] + parent2[crossover_point:]
-    child2 = parent2[:crossover_point] + parent1[crossover_point:]
-
-    return copy.deepcopy(child1), copy.deepcopy(child2)
-
 
 def two_point_crossover_two_children(
     parent1: list[population.Triangle],
@@ -165,24 +126,3 @@ def two_point_crossover_two_children(
 
     return copy.deepcopy(child1), copy.deepcopy(child2)
 
-
-def whole_triangle_crossover(
-    parent1: list[population.Triangle],
-    parent2: list[population.Triangle],
-    crossover_rate: float,
-) -> list[population.Triangle]:
-    """Creates one child by inheriting each triangle slot from one parent."""
-
-    if len(parent1) != len(parent2):
-        raise ValueError("whole_triangle_crossover requires equal-length parents.")
-
-    if np.random.random() >= crossover_rate:
-        fallback_parent = parent1 if np.random.random() < 0.5 else parent2
-        return copy.deepcopy(fallback_parent)
-
-    child: list[population.Triangle] = []
-    for triangle1, triangle2 in zip(parent1, parent2, strict=True):
-        source_triangle = triangle1 if np.random.random() < 0.5 else triangle2
-        child.append(copy.deepcopy(source_triangle))
-
-    return child
