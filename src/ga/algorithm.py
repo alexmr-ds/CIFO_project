@@ -672,6 +672,27 @@ class GeneticAlgorithm:
         )
         return immigrant_count
 
+    def select_parents(
+        self,
+        fitness_values: list[float],
+    ) -> tuple[Individual, Individual]:
+        """
+        Selects a pair of parents for crossover.
+
+        The default implementation selects both parents independently using
+        the configured selection strategy.  Subclasses can override this
+        method to implement restricted mating — e.g. choosing parent2 based
+        on its genetic distance to parent1.
+
+        Args:
+            fitness_values: Current generation fitness values (lower = better).
+
+        Returns:
+            Tuple of (parent1, parent2).
+        """
+
+        return self.select_parent(fitness_values), self.select_parent(fitness_values)
+
     def select_parent(self, fitness_values: list[float]) -> Individual:
         """
         Selects one parent from the current population using the configured strategy.
@@ -926,8 +947,7 @@ class GeneticAlgorithm:
 
                     # Fill remaining slots with crossover + mutation offspring
                     while len(next_population) < self.population_size:
-                        parent1 = self.select_parent(fitness_values)
-                        parent2 = self.select_parent(fitness_values)
+                        parent1, parent2 = self.select_parents(fitness_values)
                         children = self.crossover(parent1, parent2)
 
                         for child in children:
