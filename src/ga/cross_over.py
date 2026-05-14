@@ -222,3 +222,167 @@ def two_point_crossover_two_children(
     child2 = parent2[:point1] + parent1[point1:point2] + parent2[point2:]
 
     return copy.deepcopy(child1), copy.deepcopy(child2)
+
+
+def cycle_crossover(
+    parent1: list[population.Triangle],
+    parent2: list[population.Triangle],
+    crossover_rate: float,
+) -> tuple[list[population.Triangle], list[population.Triangle]]:
+    """
+    Performs an index-based cycle crossover on two individuals, returning two new offspring.
+
+    Standard Cycle Crossover (CX) requires parent representations to be permutations 
+    of unique elements to successfully trace mapping cycles. Because candidate images 
+    are lists of Triangle objects (which do not inherently form unique permutations), 
+    this function generates synthetic, randomized index permutations to define the cycles.
+
+    During crossover:
+    - If a specific list index belongs to the randomly generated cycle, the offspring 
+      inherits the triangle at that position from its primary parent.
+    - If the index is not in the cycle, it crosses over and inherits the triangle 
+      from the other parent.
+
+    Args:
+        parent1:        First parent individual.
+        parent2:        Second parent individual.
+        crossover_rate: Probability of performing crossover (0.0–1.0).
+
+    Returns:
+        A tuple of two new child individuals as deep-copied lists of Triangles.
+    """
+
+    if np.random.random() >= crossover_rate:
+        return copy.deepcopy(parent1), copy.deepcopy(parent2)
+
+    # Ensure parents have content
+    if len(parent1) == 0 or len(parent2) == 0:
+        return copy.deepcopy(parent1), copy.deepcopy(parent2)
+    
+    n = len(parent1)
+
+    # 1. Create permutations of the INDICES (The "INVERSION" step)
+    idx_perm1 = np.random.permutation(n).tolist()
+    idx_perm2 = np.random.permutation(n).tolist()
+
+    # 2. Randomly choose a starting POSITION in the index permutation array
+    initial_pos = np.random.randint(0, n)
+    cycle_positions = [initial_pos]
+    current_pos = initial_pos
+
+    # 3. Traverse the cycle on the INDEX PERMUTATIONS
+    while True:
+        value_perm2 = idx_perm2[current_pos]
+        next_pos = idx_perm1.index(value_perm2)
+        
+        if next_pos == initial_pos:
+            break
+            
+        cycle_positions.append(next_pos)
+        current_pos = next_pos
+
+    # 4. Extract the actual indices that belong to the cycle
+    cycle_indices = set(idx_perm1[pos] for pos in cycle_positions)
+
+    # 5. Create offspring based on the cycle with DEEP COPYING
+    offspring1 = []
+    offspring2 = []
+
+    for i in range(n):
+        if i in cycle_indices:
+            # Keep the triangle from the original parent, but copy it
+            offspring1.append(copy.deepcopy(parent1[i]))
+            offspring2.append(copy.deepcopy(parent2[i]))
+        else:
+            # Cross over (take triangle from the other parent), but copy it
+            offspring1.append(copy.deepcopy(parent2[i]))
+            offspring2.append(copy.deepcopy(parent1[i]))
+            
+    return offspring1, offspring2
+
+def pmx_crossover(
+    parent1: list[population.Triangle],
+    parent2: list[population.Triangle],
+    crossover_rate: float,
+) -> tuple[list[population.Triangle], list[population.Triangle]]:
+    """
+    Performs an index-based Partially Matched Crossover (PMX) on two individuals.
+
+    Standard PMX requires parent representations to be permutations of unique 
+    elements to successfully resolve duplicate genes during crossover. Because 
+    candidate images are lists of Triangle objects (which do not inherently form 
+    unique permutations), this function generates synthetic, randomized index 
+    permutations to act as unique IDs. It runs the strict PMX algorithm on these 
+    indices and uses the resulting arrays to reorder and mix the Triangle objects.
+
+    The PMX process:
+    1. A random contiguous "swath" (substring) is selected via two cut points.
+    2. Inside the swath, child indices are directly copied from their respective parents.
+    3. Outside the swath, indices are inherited from the opposite parent. If a duplicate 
+       index is found, it is resolved using a mapping dictionary created from the swath.
+    """
+    
+    if np.random.random() >= crossover_rate:
+        return copy.deepcopy(parent1), copy.deepcopy(parent2)
+
+    if len(parent1) == 0 or len(parent2) == 0:
+        return copy.deepcopy(parent1), copy.deepcopy(parent2)
+    
+    n = len(parent1)
+
+    # 1. INITIAL INDEX SHUFFLING (These act as the unique IDs for PMX)
+    idx_perm1 = np.random.permutation(n).tolist()
+    idx_perm2 = np.random.permutation(n).tolist()
+
+    # 2. PMX LOGIC
+    # Randomly select two cut points for the swath
+    cx_point1, cx_point2 = sorted(np.random.choice(n, 2, replace=False))
+
+    child_idx1 = [-1] * n
+    child_idx2 = [-1] * n
+
+    # Step A: Copy the swaths between the cut points
+    for i in range(cx_point1, cx_point2 + 1):
+        child_idx1[i] = idx_perm1[i]
+        child_idx2[i] = idx_perm2[i]
+
+    # Step B: Build the mappings to fix duplicates
+    mapping1 = {idx_perm1[i]: idx_perm2[i] for i in range(cx_point1, cx_point2 + 1)}
+    mapping2 = {idx_perm2[i]: idx_perm1[i] for i in range(cx_point1, cx_point2 + 1)}
+
+    # Step C: Fill the positions outside the swath, resolving duplicates via mapping
+    for i in range(n):
+        if not (cx_point1 <= i <= cx_point2):
+            # For Child 1: pull from perm2, resolve transitive mapping collisions
+            val1 = idx_perm2[i]
+            while val1 in mapping1:
+                val1 = mapping1[val1]
+            child_idx1[i] = val1
+
+            # For Child 2: pull from perm1, resolve transitive mapping collisions
+            val2 = idx_perm1[i]
+            while val2 in mapping2:
+                val2 = mapping2[val2]
+            child_idx2[i] = val2
+
+    # 3. REORDER AT THE END
+    offspring1 = []
+    offspring2 = []
+
+    for i in range(n):
+        # Assemble Child 1
+        if cx_point1 <= i <= cx_point2:
+            # Inside the swath: index originated from Parent 1
+            offspring1.append(copy.deepcopy(parent1[child_idx1[i]]))
+
+            # Inside the swath: index originated from Parent 2
+            offspring2.append(copy.deepcopy(parent2[child_idx2[i]]))
+
+        else:
+            # Outside the swath: index originated from Parent 2
+            offspring1.append(copy.deepcopy(parent2[child_idx1[i]]))
+
+            # Outside the swath: index originated from Parent 1
+            offspring2.append(copy.deepcopy(parent1[child_idx2[i]]))
+            
+    return offspring1, offspring2
