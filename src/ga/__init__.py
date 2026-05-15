@@ -1,6 +1,15 @@
 """Exports the genetic algorithm package public interface."""
 
-from . import cross_over, diversity, fitness, mutate, parallel, results, workflow
+from . import (
+    cross_over,
+    diversity,
+    fitness,
+    grid_search,
+    mutate,
+    parallel,
+    results,
+    workflow,
+)
 from .algorithm import GeneticAlgorithm
 from .diversity import FitnessSharingGA, RestrictedMatingGA
 from .results import load_all_runs, runs_dataframe, save_run
@@ -13,6 +22,7 @@ __all__ = [
     "RestrictedMatingGA",
     "diversity",
     "fitness",
+    "grid_search",
     "cross_over",
     "mutate",
     "results",

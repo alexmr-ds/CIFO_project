@@ -1,33 +1,50 @@
 """
 Crossover operators for triangle-based individuals.
 
-Crossover (recombination) takes two parent individuals and combines their
-genetic material to create one or two children.  The idea is that if two
-different parents each carry some good triangles, a child that inherits the
-best from both might outperform either parent.
+Crossover, also called recombination, takes two parent individuals and combines
+their genetic material to create one or two children. The idea is that if two
+different parents each carry some useful triangles, a child that inherits useful
+parts from both may outperform either parent.
 
-All operators work at the *triangle level*: the crossover point splits the
-list of triangles, not the internal fields of a single triangle.
+Most operators work directly at the triangle-list level: crossover splits or
+recombines the list of triangles, not the internal fields of a single triangle.
 
 Available operators
 -------------------
 single_point_crossover (→ 1 child)
-    Split both parents at a single random point; take the first half of
-    parent1 and the second half of parent2.  Simple and effective.
+    Split both parents at a single random point; take the first part from
+    parent1 and the remaining part from parent2. Simple and effective.
+
+single_point_crossover_two_children (→ 2 children)
+    Same as single-point crossover but returns both complementary children:
+    one child starts from parent1 and the other starts from parent2.
 
 two_point_crossover (→ 1 child)
-    Split at two random points; the child inherits parent1's ends and
-    parent2's middle segment.  Preserves more of each parent's structure.
+    Split at two random points; the child inherits parent1's outer segments
+    and parent2's middle segment. Preserves more of each parent's structure.
 
 two_point_crossover_two_children (→ 2 children)
-    Same as two-point but produces both complementary recombinations,
+    Same as two-point crossover but produces both complementary recombinations,
     doubling the number of offspring per pair of parents.
+
+cycle_crossover (→ 2 children)
+    Index-based Cycle Crossover (CX). Since Triangle objects are not unique
+    permutation genes, synthetic randomized index permutations are generated
+    first. Cycles are then traced over those index permutations, and triangles
+    are inherited according to whether their index belongs to the selected cycle.
+
+pmx_crossover (→ 2 children)
+    Index-based Partially Matched Crossover (PMX). Standard PMX assumes unique
+    permutation genes, so this implementation first creates synthetic randomized
+    index permutations. PMX is applied to those indices, and the resulting
+    index arrays are used to reorder and mix the Triangle objects.
 
 Crossover rate
 --------------
-Every operator accepts a ``crossover_rate`` probability.  When the rate is
-not triggered (random draw ≥ rate), a random parent is returned unchanged.
-This allows pure reproduction (no recombination) to co-exist with crossover.
+Every operator accepts a ``crossover_rate`` probability. When the rate is not
+triggered, the parents are returned unchanged or one parent is cloned, depending
+on whether the operator produces one child or two children. This allows pure
+reproduction, meaning no recombination, to co-exist with crossover.
 """
 
 import copy
@@ -36,10 +53,10 @@ import numpy as np
 
 from .. import population
 
-
 # ---------------------------------------------------------------------------
 # One-child operators
 # ---------------------------------------------------------------------------
+
 
 def single_point_crossover(
     parent1: list[population.Triangle],
@@ -137,6 +154,7 @@ def two_point_crossover(
 # Two-child operators
 # ---------------------------------------------------------------------------
 
+
 def single_point_crossover_two_children(
     parent1: list[population.Triangle],
     parent2: list[population.Triangle],
@@ -232,15 +250,15 @@ def cycle_crossover(
     """
     Performs an index-based cycle crossover on two individuals, returning two new offspring.
 
-    Standard Cycle Crossover (CX) requires parent representations to be permutations 
-    of unique elements to successfully trace mapping cycles. Because candidate images 
-    are lists of Triangle objects (which do not inherently form unique permutations), 
+    Standard Cycle Crossover (CX) requires parent representations to be permutations
+    of unique elements to successfully trace mapping cycles. Because candidate images
+    are lists of Triangle objects (which do not inherently form unique permutations),
     this function generates synthetic, randomized index permutations to define the cycles.
 
     During crossover:
-    - If a specific list index belongs to the randomly generated cycle, the offspring 
+    - If a specific list index belongs to the randomly generated cycle, the offspring
       inherits the triangle at that position from its primary parent.
-    - If the index is not in the cycle, it crosses over and inherits the triangle 
+    - If the index is not in the cycle, it crosses over and inherits the triangle
       from the other parent.
 
     Args:
@@ -258,7 +276,7 @@ def cycle_crossover(
     # Ensure parents have content
     if len(parent1) == 0 or len(parent2) == 0:
         return copy.deepcopy(parent1), copy.deepcopy(parent2)
-    
+
     n = len(parent1)
 
     # 1. Create permutations of the INDICES (The "INVERSION" step)
@@ -274,10 +292,10 @@ def cycle_crossover(
     while True:
         value_perm2 = idx_perm2[current_pos]
         next_pos = idx_perm1.index(value_perm2)
-        
+
         if next_pos == initial_pos:
             break
-            
+
         cycle_positions.append(next_pos)
         current_pos = next_pos
 
@@ -297,8 +315,9 @@ def cycle_crossover(
             # Cross over (take triangle from the other parent), but copy it
             offspring1.append(copy.deepcopy(parent2[i]))
             offspring2.append(copy.deepcopy(parent1[i]))
-            
+
     return offspring1, offspring2
+
 
 def pmx_crossover(
     parent1: list[population.Triangle],
@@ -308,26 +327,26 @@ def pmx_crossover(
     """
     Performs an index-based Partially Matched Crossover (PMX) on two individuals.
 
-    Standard PMX requires parent representations to be permutations of unique 
-    elements to successfully resolve duplicate genes during crossover. Because 
-    candidate images are lists of Triangle objects (which do not inherently form 
-    unique permutations), this function generates synthetic, randomized index 
-    permutations to act as unique IDs. It runs the strict PMX algorithm on these 
+    Standard PMX requires parent representations to be permutations of unique
+    elements to successfully resolve duplicate genes during crossover. Because
+    candidate images are lists of Triangle objects (which do not inherently form
+    unique permutations), this function generates synthetic, randomized index
+    permutations to act as unique IDs. It runs the strict PMX algorithm on these
     indices and uses the resulting arrays to reorder and mix the Triangle objects.
 
     The PMX process:
     1. A random contiguous "swath" (substring) is selected via two cut points.
     2. Inside the swath, child indices are directly copied from their respective parents.
-    3. Outside the swath, indices are inherited from the opposite parent. If a duplicate 
+    3. Outside the swath, indices are inherited from the opposite parent. If a duplicate
        index is found, it is resolved using a mapping dictionary created from the swath.
     """
-    
+
     if np.random.random() >= crossover_rate:
         return copy.deepcopy(parent1), copy.deepcopy(parent2)
 
     if len(parent1) == 0 or len(parent2) == 0:
         return copy.deepcopy(parent1), copy.deepcopy(parent2)
-    
+
     n = len(parent1)
 
     # 1. INITIAL INDEX SHUFFLING (These act as the unique IDs for PMX)
@@ -384,5 +403,5 @@ def pmx_crossover(
 
             # Outside the swath: index originated from Parent 1
             offspring2.append(copy.deepcopy(parent1[child_idx2[i]]))
-            
+
     return offspring1, offspring2

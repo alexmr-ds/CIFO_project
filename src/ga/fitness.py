@@ -18,9 +18,13 @@ compute_structure_loss
 compute_rmse_plus_structure
     Weighted blend of RMSE and structure loss.
     Useful when you want the GA to preserve edges as well as colour.
+
+make_rmse_structure_fitness
+    Picklable factory for process-safe weighted RMSE + structure fitness.
 """
 
 from collections.abc import Callable
+from functools import partial
 
 import numpy as np
 
@@ -88,6 +92,20 @@ def _gradient_magnitude(image: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Public fitness functions
 # ---------------------------------------------------------------------------
+
+def _validate_structure_weights(
+    rmse_weight: float,
+    structure_weight: float,
+) -> tuple[float, float]:
+    """Validates and normalizes the RMSE/structure fitness weights."""
+
+    if rmse_weight < 0.0 or structure_weight < 0.0:
+        raise ValueError("rmse_weight and structure_weight must be non-negative.")
+    if rmse_weight == 0.0 and structure_weight == 0.0:
+        raise ValueError("At least one fitness weight must be greater than zero.")
+
+    return float(rmse_weight), float(structure_weight)
+
 
 def compute_rmse(target: np.ndarray, generated: np.ndarray) -> float:
     """
@@ -178,12 +196,35 @@ def compute_rmse_plus_structure(
         ValueError: If both weights are zero or either is negative.
     """
 
-    if rmse_weight < 0.0 or structure_weight < 0.0:
-        raise ValueError("rmse_weight and structure_weight must be non-negative.")
-    if rmse_weight == 0.0 and structure_weight == 0.0:
-        raise ValueError("At least one fitness weight must be greater than zero.")
+    rmse_weight, structure_weight = _validate_structure_weights(
+        rmse_weight,
+        structure_weight,
+    )
 
     rmse = compute_rmse(target, generated)
     structure_loss = compute_structure_loss(target, generated)
 
     return float((rmse_weight * rmse) + (structure_weight * structure_loss))
+
+
+def make_rmse_structure_fitness(
+    rmse_weight: float = 1.0,
+    structure_weight: float = 0.35,
+) -> FitnessFunction:
+    """
+    Returns a picklable weighted RMSE + structure fitness callable.
+
+    The returned callable is a ``functools.partial`` over the module-level
+    ``compute_rmse_plus_structure`` function, which keeps it compatible with
+    ``pickle`` and process-based evaluation backends.
+    """
+
+    rmse_weight, structure_weight = _validate_structure_weights(
+        rmse_weight,
+        structure_weight,
+    )
+    return partial(
+        compute_rmse_plus_structure,
+        rmse_weight=rmse_weight,
+        structure_weight=structure_weight,
+    )

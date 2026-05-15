@@ -100,8 +100,9 @@ ga = GeneticAlgorithm(
 `src.ga.fitness` provides module-level helpers that can be passed directly to `fitness_function`:
 
 - `fitness.compute_rmse(...)`: RMSE loss normalized to `[0, 1]`.
+- `fitness.compute_structure_loss(...)`: Edge-structure loss on luminance gradients.
 - `fitness.compute_rmse_plus_structure(...)`: Weighted RMSE + edge-structure loss.
-- `fitness.make_rmse_structure_fitness(...)`: Factory that returns a configured callable for `fitness_function`.
+- `fitness.make_rmse_structure_fitness(...)`: Picklable factory that returns a configured callable for `fitness_function`.
 - Custom fitness functions must return lower values for better individuals.
 
 Example:
@@ -255,7 +256,7 @@ ga = GeneticAlgorithm(
     fitness_function=fitness.compute_rmse,
     population_size=120,
     generations=80,
-    mutation_function=mutate.volatile_triangle_mutation,
+    mutation_function=mutate.focused_triangle_mutation,
     mutation_rate=0.1,
     progress=True,
     progress_interval=5,
@@ -327,6 +328,7 @@ Process backend caveats:
 
 - `fitness_function` must be picklable.
 - Module-level functions such as `src.ga.fitness.compute_rmse` are safest.
+- `fitness.make_rmse_structure_fitness(...)` is also safe because it returns a picklable partial over a module-level function.
 - Avoid lambdas and notebook-local closures.
 - Prefer thread or sequential evaluation for normal notebook-only work.
 
@@ -372,7 +374,7 @@ ga = GeneticAlgorithm(
     fitness_function=fitness.compute_rmse,
     population_size=120,
     generations=80,
-    mutation_function=mutate.volatile_triangle_mutation,
+    mutation_function=mutate.focused_triangle_mutation,
     mutation_rate=0.12,
     adaptive_mutation=True,
     mutation_rate_bounds=(0.03, 0.25),
@@ -424,7 +426,7 @@ result = run_staged_triangle_optimization(
     stages=stages,
     elitism=2,
     crossover_function=cross_over.two_point_crossover,
-    mutation_function=mutate.volatile_triangle_mutation,
+    mutation_function=mutate.focused_triangle_mutation,
     seeded=True,
 )
 
@@ -434,6 +436,14 @@ best_individual = result.best_individual
 ```
 
 `StageConfig.stagnation_window` is configured per stage and defaults to `8`, matching `GeneticAlgorithm`.
+
+## Additional Public APIs
+
+The `src.ga` package also exports higher-level variants and workflow helpers:
+
+- `FitnessSharingGA` for niche-preserving selection pressure.
+- `RestrictedMatingGA` for distance-aware parent pairing.
+- `StageConfig`, `StageResult`, `StagedRunResult`, and `run_staged_triangle_optimization(...)` for staged triangle-count schedules.
 
 ## Common Validation Errors
 

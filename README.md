@@ -1,15 +1,16 @@
 # CIFO Project
 
-Notebook-first prototype for approximating a target image with semi-transparent triangles using a genetic algorithm. The pipeline covers image loading, triangle-based individual generation, rendering, RMSE fitness evaluation, and a parallel experiment framework with file-based result caching.
+Notebook-first prototype for approximating a target image with triangles evolved by a genetic algorithm. The project covers image loading, triangle-based individual generation, rendering, RMSE and structure-aware fitness evaluation, staged workflows, diversity variants, and parallel experiment helpers with file-based result caching.
 
 ## Project Status
 
 - Core GA pipeline is working: image loading, population generation, rendering, fitness evaluation, and GA orchestration.
-- The main workflow is `notebooks/Step_by_step_exploration.ipynb`, which runs systematic parameter contribution analysis (baseline, population size, elitism, crossover type/rate, mutation rate) with 5 trials each and cached results.
-- Parallel experiment infrastructure lives in `src/ga/parallel.py` (`GAConfig`, `run_trials`, `run_grid_search`).
+- The main workflow is `notebooks/Step_by_step_exploration.ipynb`, which runs systematic parameter analysis and cached experiment sweeps from notebooks.
+- Parallel experiment infrastructure lives in `src/ga/parallel.py` (`GAConfig`, `run_single_ga`, `run_trials`, `run_grid_search`).
+- Staged optimization helpers live in `src/ga/workflow.py`, and diversity-preserving GA variants live in `src/ga/diversity.py`.
 - Results are persisted as timestamped JSON files under `results/<experiment>/` and loaded automatically on re-run so cells are instant when nothing changed.
-- Available crossover operators: `single_point_crossover`, `single_point_crossover_two_children`, `two_point_crossover`, `two_point_crossover_two_children`.
-- Available mutation operator: `random_triangle_mutation`.
+- Available crossover operators: `single_point_crossover`, `single_point_crossover_two_children`, `two_point_crossover`, `two_point_crossover_two_children`, `cycle_crossover`, `pmx_crossover`.
+- Available mutation operators: `random_triangle_mutation`, `focused_triangle_mutation`.
 - Selection strategies: tournament, ranking, roulette-wheel.
 
 ## Setup
@@ -22,6 +23,8 @@ uv run python main.py
 ## Notebook Workflow
 
 Open `notebooks/Step_by_step_exploration.ipynb` with the project interpreter after `uv sync`. The first cell adds the project root to `sys.path`.
+
+Use `notebooks/Grid_search_experiment.ipynb` for the guarded grid-search experiment across all configured hyperparameter setups. It keeps fitness sharing active, varies restricted mating and other GA operators, saves raw trial results to `results/grid_search_raw_results.csv`, and writes the aggregated setup summary to `results/grid_search_summary.csv`.
 
 ### Running Parallel Experiments
 
@@ -113,6 +116,12 @@ GAConfig(
 
 Use `(255, 255)` for fully opaque triangles (recommended for cleaner convergence). The default `(5, 255)` allows semi-transparent triangles.
 
+### Additional Workflows
+
+- Use `fitness.make_rmse_structure_fitness(...)` when you need a picklable weighted RMSE + structure loss for process-based evaluation.
+- Use `run_staged_triangle_optimization(...)` for coarse-to-fine triangle-count schedules.
+- Use `FitnessSharingGA` or `RestrictedMatingGA` when you want diversity-preserving selection pressure instead of the baseline GA.
+
 ## Current Limitations
 
 - Notebook-first; not yet packaged as a standalone CLI experiment runner.
@@ -121,25 +130,36 @@ Use `(255, 255)` for fully opaque triangles (recommended for cleaner convergence
 
 ## File Tree
 
-- `README.md` — project overview, setup, and workflow reference.
+- `README.md` — project overview, setup, workflows, and current file tree.
+- `GeneticAlgorithm.md` — reference guide for the main GA API and notebook usage patterns.
 - `main.py` — minimal CLI smoke-check entrypoint.
 - `pyproject.toml` — project metadata and dependencies managed with `uv`.
 - `uv.lock` — locked dependency versions.
-- `images/girl_pearl_earing.png` — target image used in the notebook.
-- `notebooks/Step_by_step_exploration.ipynb` — main analysis notebook: baseline + parameter grid searches with caching and visualization.
-- `results/` — cached JSON run results, organised by experiment (`baseline/`, `elitism/`, `population_size/`, `crossover_grid/`, `mutation_rate/`).
-- `src/__init__.py` — exposes `load_image`, `population`, `rendering`.
+- `images/girl_pearl_earing.png` — target image used in the notebooks.
+- `notebooks/Initial_analysis.ipynb` — earlier exploratory notebook for GA experiments.
+- `notebooks/Exploration.ipynb` — additional notebook experimentation and analysis.
+- `notebooks/Step_by_step_exploration.ipynb` — main experiment notebook with cached sweeps and visualizations.
+- `notebooks/Grid_search_experiment.ipynb` — guarded sequential grid-search notebook with resumable CSV output.
+- `results/` — cached experiment outputs plus `.gitkeep`; current subdirectories include runs such as `baseline/`, `crossover_grid/`, `elitism/`, `fitness_sharing/`, `mutation_rate/`, and `population_size/`.
+- `src/__init__.py` — exposes the top-level package modules used from notebooks.
 - `src/load_image.py` — loads and resizes target images to NumPy arrays.
-- `src/population.py` — `Triangle` dataclass, alpha sampling, random individual/population factories.
-- `src/rendering.py` — renders triangle individuals to PIL images and converts to arrays.
-- `src/ga/__init__.py` — exports `GeneticAlgorithm` and operator modules.
-- `src/ga/algorithm.py` — GA orchestration: selection, crossover, mutation, elitism, history tracking.
-- `src/ga/parallel.py` — `GAConfig`, `TrialSummary`, `run_trials`, `run_grid_search` for parallel cached experiments.
-- `src/ga/results.py` — saves and loads per-run JSON result files; `runs_dataframe()` for pandas summaries.
-- `src/ga/fitness.py` — `compute_rmse` fitness function.
-- `src/ga/cross_over.py` — crossover operators: single-point, two-point, one-child and two-children variants.
-- `src/ga/mutate.py` — `random_triangle_mutation` operator.
+- `src/population.py` — triangle datatypes plus random and seeded population factories.
+- `src/rendering.py` — renders triangle individuals to images and arrays.
+- `src/ga/__init__.py` — exports the GA public interface, helpers, and workflow entrypoints.
+- `src/ga/algorithm.py` — baseline `GeneticAlgorithm` implementation and validation logic.
+- `src/ga/cross_over.py` — triangle-list crossover operators, including one-child and two-child variants.
+- `src/ga/diversity.py` — diversity-preserving GA variants with fitness sharing and restricted mating.
+- `src/ga/evaluation.py` — sequential, thread, and process evaluation backends.
+- `src/ga/fitness.py` — RMSE, structure-aware fitness helpers, and the picklable hybrid-fitness factory.
+- `src/ga/logs.py` — per-generation and run-level logging payload helpers.
+- `src/ga/mutate.py` — conservative and stronger triangle mutation operators.
+- `src/ga/parallel.py` — parallel cached trial runners for notebooks.
+- `src/ga/grid_search.py` — reusable helpers for the guarded grid-search notebook.
+- `src/ga/results.py` — JSON result persistence and pandas loading helpers.
 - `src/ga/selection.py` — tournament, ranking, and roulette-wheel parent selection.
-- `src/ga/evaluation.py` — sequential, thread, and process fitness evaluation backends.
-- `src/ga/logs.py` — per-generation and run-level log formatting.
-- `tests/` — unit and smoke tests for initialization, selection, crossover, imports.
+- `src/ga/workflow.py` — staged triangle-count optimization workflow utilities.
+- `tests/test_crossover_children.py` — validates crossover operators that return one or two children.
+- `tests/test_imports.py` — protects the package import surface.
+- `tests/test_rmse_structure_fitness.py` — checks the process-safe hybrid fitness factory.
+- `tests/test_selection.py` — covers selection strategy behavior.
+- `tests/test_workflow.py` — covers staged workflow behavior and process-backend compatibility.
