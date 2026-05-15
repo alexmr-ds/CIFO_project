@@ -26,6 +26,7 @@ dist/
 outputs/
 artifacts/
 results/**/*.json
+results/*.csv
 **/AGENTS.md
 *.log
 .env
