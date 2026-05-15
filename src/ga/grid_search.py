@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import itertools
 import time
 from collections.abc import Mapping
@@ -11,7 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import cross_over, diversity, fitness, mutate
+from . import cross_over, diversity, evaluation, fitness, logs, mutate
 
 
 class FitnessSharingRestrictedMatingGA(
@@ -20,7 +21,123 @@ class FitnessSharingRestrictedMatingGA(
 ):
     """GA combining fitness sharing and restricted mating."""
 
-    pass
+    def run_with_early_stopping(self, patience: int) -> tuple[float, list[float]]:
+        """Run the GA until the global best stalls for the configured patience."""
+
+        if patience <= 0:
+            raise ValueError("patience must be greater than zero.")
+
+        self.initialize()
+
+        executor: evaluation.Executor | None = None
+        generation_logs: list[logs.GenerationLog] = []
+        stale_generations = 0
+
+        try:
+            if self.evaluation_backend != "sequential":
+                executor = evaluation.create_evaluation_executor(
+                    self.evaluation_backend,
+                    self.n_jobs,
+                    self.target,
+                    self.fitness_function,
+                    self.image_width,
+                    self.image_height,
+                )
+
+            for generation in range(self.generations):
+                previous_best = float(self.best_fitness)
+
+                evaluation_started = time.perf_counter()
+                fitness_values = self._evaluate_population(executor)
+                evaluation_duration_seconds = (
+                    time.perf_counter() - evaluation_started
+                )
+
+                ranked_indices = np.argsort(fitness_values)
+                generation_best_fitness = float(fitness_values[int(ranked_indices[0])])
+                global_best_fitness = float(self.best_fitness)
+                improved = global_best_fitness < previous_best
+
+                if improved:
+                    self._last_improvement_generation = generation
+                    stale_generations = 0
+                else:
+                    stale_generations += 1
+
+                self._update_mutation_rate(generation)
+                self.history.append(global_best_fitness)
+
+                offspring_created = 0
+                mutated_offspring = 0
+                mutated_triangles = 0
+                immigrant_count = 0
+                should_stop = stale_generations >= patience
+
+                if generation != self.generations - 1 and not should_stop:
+                    next_population = [
+                        copy.deepcopy(self.population[int(index)])
+                        for index in ranked_indices[: self.elitism]
+                    ]
+
+                    immigrant_count = self._inject_random_immigrants(next_population)
+
+                    while len(next_population) < self.population_size:
+                        parent1, parent2 = self.select_parents(fitness_values)
+                        children = self.crossover(parent1, parent2)
+
+                        for child in children:
+                            if len(next_population) >= self.population_size:
+                                break
+                            child, changed_triangles = self.mutate(child)
+                            offspring_created += 1
+                            mutated_triangles += changed_triangles
+                            if changed_triangles > 0:
+                                mutated_offspring += 1
+                            next_population.append(child)
+
+                    self.population = next_population[: self.population_size]
+
+                generation_log = logs.create_generation_log(
+                    generation=generation,
+                    generation_best_fitness=generation_best_fitness,
+                    generation_mean_fitness=float(np.mean(fitness_values)),
+                    global_best_fitness=global_best_fitness,
+                    evaluation_backend=self.evaluation_backend,
+                    n_jobs=self.n_jobs,
+                    chunksize=self.chunksize,
+                    evaluation_duration_seconds=evaluation_duration_seconds,
+                    mutation_rate_used=float(self._current_mutation_rate),
+                    offspring_created=offspring_created,
+                    mutated_offspring=mutated_offspring,
+                    mutated_triangles=mutated_triangles,
+                    immigrant_count=immigrant_count,
+                )
+
+                if self.logs:
+                    generation_logs.append(generation_log)
+
+                self._emit_progress(generation_log)
+
+                if should_stop:
+                    break
+
+        finally:
+            if executor is not None:
+                executor.shutdown()
+
+        if self.best_individual is None:
+            raise RuntimeError(
+                "The genetic algorithm did not produce a best individual."
+            )
+
+        if self.logs:
+            self.run_logs = logs.create_run_logs(
+                generation_logs,
+                float(self.best_fitness),
+                self.best_individual,
+            )
+
+        return float(self.best_fitness), list(self.history)
 
 
 RESULT_COLUMNS = [
@@ -34,6 +151,8 @@ RESULT_COLUMNS = [
     "restricted_mating",
     "final_best_fitness",
     "best_generation",
+    "generations_run",
+    "stopped_early",
     "runtime_seconds",
 ]
 
@@ -108,11 +227,15 @@ def build_summary(raw_results: pd.DataFrame) -> pd.DataFrame:
         "std_final_best_fitness",
         "min_final_best_fitness",
         "max_final_best_fitness",
+        "mean_generations_run",
+        "stopped_early_trials",
         "mean_runtime_seconds",
         "completed_trials",
     ]
     if raw_results.empty:
         return pd.DataFrame(columns=summary_columns)
+
+    raw_results = raw_results.reindex(columns=RESULT_COLUMNS)
 
     grouping_columns = [
         "setup_id",
@@ -129,6 +252,8 @@ def build_summary(raw_results: pd.DataFrame) -> pd.DataFrame:
             std_final_best_fitness=("final_best_fitness", "std"),
             min_final_best_fitness=("final_best_fitness", "min"),
             max_final_best_fitness=("final_best_fitness", "max"),
+            mean_generations_run=("generations_run", "mean"),
+            stopped_early_trials=("stopped_early", "sum"),
             mean_runtime_seconds=("runtime_seconds", "mean"),
             completed_trials=("trial_id", "count"),
         )
@@ -136,6 +261,9 @@ def build_summary(raw_results: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
     summary["std_final_best_fitness"] = summary["std_final_best_fitness"].fillna(0.0)
+    summary["stopped_early_trials"] = (
+        summary["stopped_early_trials"].fillna(0).astype(int)
+    )
     return summary.reindex(columns=summary_columns)
 
 
@@ -148,8 +276,12 @@ def run_one_trial(
     fitness_function: Any | None = None,
     mutation_function: Any | None = None,
     crossover_functions: Mapping[str, Any] | None = None,
+    early_stopping_patience: int | None = None,
 ) -> dict[str, Any]:
     """Run one deterministic grid-search GA trial."""
+
+    if early_stopping_patience is not None and early_stopping_patience <= 0:
+        raise ValueError("early_stopping_patience must be greater than zero.")
 
     fitness_function = fitness_function or fitness.compute_rmse
     mutation_function = mutation_function or mutate.random_triangle_mutation
@@ -180,8 +312,14 @@ def run_one_trial(
     )
 
     started = time.perf_counter()
-    final_best_fitness, history = ga.run()
+    if early_stopping_patience is None:
+        final_best_fitness, history = ga.run()
+    else:
+        final_best_fitness, history = ga.run_with_early_stopping(
+            early_stopping_patience,
+        )
     runtime_seconds = time.perf_counter() - started
+    generations_run = len(history)
 
     return {
         "setup_id": setup_id,
@@ -194,5 +332,7 @@ def run_one_trial(
         "restricted_mating": setup["restricted_mating"],
         "final_best_fitness": float(final_best_fitness),
         "best_generation": first_best_generation(history, final_best_fitness),
+        "generations_run": generations_run,
+        "stopped_early": generations_run < int(fixed_params["generations"]),
         "runtime_seconds": float(runtime_seconds),
     }

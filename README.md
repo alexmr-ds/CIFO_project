@@ -24,7 +24,7 @@ uv run python main.py
 
 Open `notebooks/Step_by_step_exploration.ipynb` with the project interpreter after `uv sync`. The first cell adds the project root to `sys.path`.
 
-Use `notebooks/Grid_search_experiment.ipynb` for the guarded grid-search experiment across all configured hyperparameter setups. It keeps fitness sharing active, varies restricted mating and other GA operators, saves raw trial results to `results/grid_search_raw_results.csv`, and writes the aggregated setup summary to `results/grid_search_summary.csv`.
+Use `notebooks/Grid_search_experiment.ipynb` for the guarded grid-search experiment across all configured hyperparameter setups. It keeps fitness sharing active, varies restricted mating and other GA operators, applies grid-search-only early stopping with patience 5, saves raw trial results to `results/grid_search_raw_results.csv`, and writes the aggregated setup summary to `results/grid_search_summary.csv`.
 
 ### Running Parallel Experiments
 
@@ -121,12 +121,13 @@ Use `(255, 255)` for fully opaque triangles (recommended for cleaner convergence
 - Use `fitness.make_rmse_structure_fitness(...)` when you need a picklable weighted RMSE + structure loss for process-based evaluation.
 - Use `run_staged_triangle_optimization(...)` for coarse-to-fine triangle-count schedules.
 - Use `FitnessSharingGA` or `RestrictedMatingGA` when you want diversity-preserving selection pressure instead of the baseline GA.
+- Grid-search raw CSV rows include `generations_run` and `stopped_early`; summaries include `mean_generations_run` and `stopped_early_trials`.
 
 ## Current Limitations
 
 - Notebook-first; not yet packaged as a standalone CLI experiment runner.
 - Rendering is PIL-based and is the main performance bottleneck per generation.
-- Grid search supports only single-parameter sweeps; joint parameter sweeps require manual nested loops.
+- The parallel helper in `src/ga/parallel.py` supports single-parameter sweeps; the guarded notebook uses `src/ga/grid_search.py` for the joint setup grid.
 
 ## File Tree
 
@@ -159,6 +160,7 @@ Use `(255, 255)` for fully opaque triangles (recommended for cleaner convergence
 - `src/ga/selection.py` — tournament, ranking, and roulette-wheel parent selection.
 - `src/ga/workflow.py` — staged triangle-count optimization workflow utilities.
 - `tests/test_crossover_children.py` — validates crossover operators that return one or two children.
+- `tests/test_grid_search.py` — covers grid-search result rows, summaries, and early stopping.
 - `tests/test_imports.py` — protects the package import surface.
 - `tests/test_rmse_structure_fitness.py` — checks the process-safe hybrid fitness factory.
 - `tests/test_selection.py` — covers selection strategy behavior.
