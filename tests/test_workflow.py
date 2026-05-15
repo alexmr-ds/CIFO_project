@@ -102,7 +102,7 @@ class StagedWorkflowTests(TestCase):
 
         result = workflow.run_staged_triangle_optimization(
             target=self.target,
-            fitness_function=fitness.compute_rmse_plus_structure,
+            fitness_function=fitness.compute_rmse,
             population_size=3,
             stages=[stage],
             elitism=1,
