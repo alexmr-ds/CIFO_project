@@ -37,21 +37,90 @@ The outer ``ProcessPoolExecutor`` in ``run_trials`` / ``run_grid_search``
 provides the parallelism, with one process per trial.
 """
 
-from __future__ import annotations
-
+import json
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from .. import population
-from .results import save_run
 
 Individual = list[population.Triangle]
+
+
+# ---------------------------------------------------------------------------
+# Serialisation helpers (previously in results.py)
+# ---------------------------------------------------------------------------
+
+def _individual_to_json(individual: Individual) -> list[dict]:
+    return [
+        {"x1": t.x1, "y1": t.y1, "x2": t.x2, "y2": t.y2,
+         "x3": t.x3, "y3": t.y3, "r": t.r, "g": t.g, "b": t.b, "a": t.a}
+        for t in individual
+    ]
+
+
+def _individual_from_json(data: list[dict]) -> Individual:
+    return [
+        population.Triangle(
+            x1=t["x1"], y1=t["y1"], x2=t["x2"], y2=t["y2"],
+            x3=t["x3"], y3=t["y3"], r=t["r"], g=t["g"], b=t["b"], a=t["a"],
+        )
+        for t in data
+    ]
+
+
+def save_run(
+    pipeline: str,
+    parameters: dict,
+    best_fitness: float,
+    history: list[float],
+    best_individual: Individual,
+    runtime_seconds: float,
+    notes: str = "",
+    results_dir: Path | str = Path("results"),
+) -> Path:
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S-%f")
+    run_id = f"{pipeline.lower().replace(' ', '_')}_{timestamp}"
+    filename = results_dir / f"{run_id}.json"
+    payload = {
+        "run_id": run_id,
+        "pipeline": pipeline,
+        "timestamp": datetime.now().isoformat(),
+        "runtime_seconds": round(runtime_seconds, 1),
+        "notes": notes,
+        "parameters": parameters,
+        "results": {
+            "best_fitness": best_fitness,
+            "generations_run": len(history),
+            "history": history,
+        },
+        "best_individual": _individual_to_json(best_individual),
+    }
+    filename.write_text(json.dumps(payload, indent=2))
+    return filename
+
+
+def load_all_runs(results_dir: Path | str) -> list[dict]:
+    results_dir = Path(results_dir)
+    if not results_dir.exists():
+        return []
+    runs = []
+    for path in sorted(results_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+            data["individual"] = _individual_from_json(data["best_individual"])
+            runs.append(data)
+        except Exception:
+            pass
+    return runs
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +255,59 @@ def _params_match(config: GAConfig, run: dict) -> bool:
     )
 
 
+def _get_ga_class(name: str):
+    """Import and return a GA class by name — called inside worker processes."""
+    if name == "GeneticAlgorithm":
+        from .algorithm import GeneticAlgorithm
+        return GeneticAlgorithm
+    if name == "FitnessSharingGA":
+        from .diversity import FitnessSharingGA
+        return FitnessSharingGA
+    if name == "RestrictedMatingGA":
+        from .diversity import RestrictedMatingGA
+        return RestrictedMatingGA
+    if name == "FitnessSharingRestrictedMatingGA":
+        from .diversity import FitnessSharingRestrictedMatingGA
+        return FitnessSharingRestrictedMatingGA
+    raise ValueError(f"Unknown GA class: {name!r}")
+
+
+def _params_match_variant(config: GAConfig, run: dict, extra_kwargs: dict) -> bool:
+    """True if run matches config base params AND the extra_kwargs values."""
+    if not _params_match(config, run):
+        return False
+    p = run.get("parameters", {})
+    skip = {"target", "fitness_function", "crossover_function", "mutation_function"}
+    return all(p.get(k) == v for k, v in extra_kwargs.items() if k not in skip)
+
+
+def _load_cached_results_variant(
+    pipeline: str,
+    results_dir: Path | str,
+    config: GAConfig,
+    extra_kwargs: dict,
+) -> list[dict]:
+    """Like _load_cached_results but also checks extra_kwargs values."""
+
+    results_dir = Path(results_dir)
+    if not results_dir.exists():
+        return []
+
+    loaded = []
+    for r in load_all_runs(results_dir):
+        if r.get("pipeline") == pipeline and _params_match_variant(config, r, extra_kwargs):
+            loaded.append({
+                "fitness":    r["results"]["best_fitness"],
+                "history":    r["results"]["history"],
+                "individual": r["individual"],
+                "runtime":    r.get("runtime_seconds", 0),
+                "trial":      len(loaded),
+                "label":      pipeline,
+                "params":     r.get("parameters", {}),
+            })
+    return loaded
+
+
 def _load_cached_results(
     pipeline: str,
     results_dir: Path | str,
@@ -210,7 +332,6 @@ def _load_cached_results(
         List of normalised run dicts, sorted oldest-first.
     """
 
-    from .results import load_all_runs
 
     results_dir = Path(results_dir)
     if not results_dir.exists():
@@ -335,6 +456,66 @@ def run_single_ga(config: GAConfig) -> dict:
     }
 
 
+def run_single_ga_variant(config: GAConfig, ga_class_name: str, extra_kwargs: dict) -> dict:
+    """
+    Worker that runs one trial of any GA subclass.  Must be module-level for pickling.
+
+    Like ``run_single_ga`` but instantiates the class named by ``ga_class_name``
+    and passes ``extra_kwargs`` (e.g. ``sigma_share``, ``mating_type``) to it.
+
+    Args:
+        config:        Fully populated GAConfig for this specific trial.
+        ga_class_name: One of ``"GeneticAlgorithm"``, ``"FitnessSharingGA"``,
+                       ``"RestrictedMatingGA"``.
+        extra_kwargs:  Subclass-specific keyword arguments (e.g.
+                       ``{"sigma_share": 0.3, "n_bins": 8}``).
+
+    Returns:
+        Same dict shape as ``run_single_ga``.
+    """
+    cls = _get_ga_class(ga_class_name)
+    print(f"  → [{config.label}] Trial {config.trial + 1} starting  "
+          f"(pop={config.population_size}, gen={config.generations})")
+
+    ga = cls(
+        target=config.target,
+        fitness_function=config.fitness_function,
+        population_size=config.population_size,
+        generations=config.generations,
+        crossover_function=config.crossover_function,
+        crossover_rate=config.crossover_rate,
+        mutation_function=config.mutation_function,
+        mutation_rate=config.mutation_rate,
+        elitism=config.elitism,
+        selection_type=config.selection_type,
+        triangle_alpha_range=config.triangle_alpha_range,
+        evaluation_backend="sequential",
+        progress=False,
+        **extra_kwargs,
+    )
+
+    t0 = time.perf_counter()
+    best_fitness, history = ga.run()
+    runtime = time.perf_counter() - t0
+
+    print(f"  ✓ [{config.label}] Trial {config.trial + 1} done     "
+          f"RMSE={best_fitness:.6f}  ({runtime:.1f}s)")
+
+    skip = {"target", "fitness_function", "crossover_function", "mutation_function"}
+    return {
+        "label":      config.label,
+        "trial":      config.trial,
+        "fitness":    best_fitness,
+        "history":    history,
+        "individual": ga.best_individual,
+        "runtime":    runtime,
+        "params":     {
+            **ga.params_dict(),
+            **{k: v for k, v in extra_kwargs.items() if k not in skip},
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -386,7 +567,7 @@ def run_trials(
 
     # Partial or cold cache — only run the missing trials
     n_missing = n_trials - n_existing
-    workers = max_workers or n_missing
+    workers = max_workers or min(n_missing, os.cpu_count() or 1)
 
     if n_existing:
         print(f"~ '{pipeline}' — {n_existing} cached + {n_missing} missing  "
@@ -431,6 +612,130 @@ def run_trials(
     print(f"└─ {summary.pipeline} — mean RMSE: {summary.mean_fitness:.6f} ± {summary.std_fitness:.6f}  "
           f"best: {summary.min_fitness:.6f}  ({new_runtime:.0f}s for new trials)")
     return summary
+
+
+
+def run_variants_batch(
+    config: GAConfig,
+    variants: dict[str, tuple[str, str, dict]],
+    n_trials: int,
+    results_dir: Path | str,
+    notes: str = "",
+    max_workers: int | None = None,
+) -> dict[str, TrialSummary]:
+    """
+    Run N trials for each variant, submitting all missing trials to a single
+    shared ``ProcessPoolExecutor`` — the same pattern as ``run_grid_search``.
+
+    All
+    CPU cores stay busy for the full duration instead of being idle while the
+    next variant's pool starts up.
+
+    Args:
+        config:      Base GA configuration shared by all variants.
+        variants:    Ordered dict mapping display_label →
+                     ``(pipeline, ga_class_name, extra_kwargs)``.
+                     ``pipeline`` is the unique cache key written to disk.
+        n_trials:    Target number of independent trials per variant.
+        results_dir: Directory where individual trial JSONs are saved.
+        notes:       Free-text note appended to every saved run.
+        max_workers: Parallel processes.  Defaults to the total number of
+                     missing trials across all variants.
+
+    Returns:
+        Dict mapping each display_label → ``TrialSummary``.
+    """
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"┌─ {len(variants)} variants  {len(variants) * n_trials} trials total  "
+          f"pop={config.population_size}  gen={config.generations}", flush=True)
+
+    # ── Phase 1: check cache, collect all missing jobs ────────────────────────
+    cached_by_label: dict[str, list[dict]] = {}
+    all_jobs: list[tuple[str, str, str, dict, GAConfig]] = []
+    # each job: (display_label, pipeline, ga_class_name, extra_kwargs, trial_config)
+
+    for label, (pipeline, ga_class_name, extra_kwargs) in variants.items():
+        existing   = _load_cached_results_variant(pipeline, results_dir, config, extra_kwargs)
+        cached_by_label[label] = existing
+        n_existing = len(existing)
+        n_missing  = n_trials - n_existing
+
+        if n_existing >= n_trials:
+            s = _build_trial_summary(
+                pipeline, existing[-n_trials:],
+                sum(r["runtime"] for r in existing[-n_trials:]),
+            )
+            print(f"  ✓ '{pipeline}' — loaded {n_trials} cached  "
+                  f"(mean RMSE={s.mean_fitness:.6f})", flush=True)
+        else:
+            tag = f"{n_existing} cached + {n_missing} missing" if n_existing else f"{n_missing} missing"
+            print(f"  ~ '{pipeline}' — {tag}", flush=True)
+            for i in range(n_missing):
+                trial_cfg = GAConfig(
+                    **{**config.__dict__, "trial": n_existing + i, "label": pipeline}
+                )
+                all_jobs.append((label, pipeline, ga_class_name, extra_kwargs, trial_cfg))
+
+    # ── Full cache hit — no work to do ────────────────────────────────────────
+    if not all_jobs:
+        summaries = {}
+        for label, (pipeline, _cls, _extra) in variants.items():
+            runs = cached_by_label[label][-n_trials:]
+            summaries[label] = _build_trial_summary(
+                pipeline, runs, sum(r["runtime"] for r in runs)
+            )
+        print("└─ all cached", flush=True)
+        return summaries
+
+    # ── Phase 2: dispatch all missing trials to one pool ──────────────────────
+    workers = max_workers or min(len(all_jobs), os.cpu_count() or 1)
+    print(f"  dispatching {len(all_jobs)} new trials  workers={workers}", flush=True)
+
+    t0 = time.perf_counter()
+    new_by_label: dict[str, list[dict]] = {label: [] for label in variants}
+    n_done = 0
+
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        future_to_meta = {
+            executor.submit(run_single_ga_variant, trial_cfg, ga_class_name, extra_kwargs):
+                (label, pipeline, trial_cfg.trial)
+            for label, pipeline, ga_class_name, extra_kwargs, trial_cfg in all_jobs
+        }
+        for future in as_completed(future_to_meta):
+            label, pipeline, trial_idx = future_to_meta[future]
+            result = future.result()
+            n_done += 1
+            print(f"  ✓ [{pipeline}] trial {trial_idx + 1}/{n_trials}  "
+                  f"RMSE={result['fitness']:.6f}  ({result['runtime']:.1f}s)  "
+                  f"[{n_done}/{len(all_jobs)} done]", flush=True)
+            new_by_label[label].append(result)
+
+    wall = time.perf_counter() - t0
+
+    # ── Phase 3: save results and build summaries ─────────────────────────────
+    summaries = {}
+    for label, (pipeline, _cls, extra_kwargs) in variants.items():
+        new_results = sorted(new_by_label[label], key=lambda r: r["trial"])
+        for r in new_results:
+            save_run(
+                pipeline=pipeline,
+                parameters=r["params"],
+                best_fitness=r["fitness"],
+                history=r["history"],
+                best_individual=r["individual"],
+                runtime_seconds=r["runtime"],
+                notes=f"{notes} [trial {r['trial'] + 1}/{n_trials}]",
+                results_dir=results_dir,
+            )
+        all_results   = (cached_by_label[label] + new_results)[-n_trials:]
+        total_runtime = (sum(r["runtime"] for r in cached_by_label[label])
+                         + sum(r["runtime"] for r in new_results))
+        summaries[label] = _build_trial_summary(pipeline, all_results, total_runtime)
+
+    print(f"└─ done in {wall:.0f}s", flush=True)
+    return summaries
 
 
 def run_grid_search(

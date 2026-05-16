@@ -3,27 +3,10 @@ Structured logging types and builders for GA run telemetry.
 
 When ``logs=True`` is passed to GeneticAlgorithm, the algorithm captures
 detailed per-generation metrics and stores them in ``ga.run_logs`` after
-``ga.run()`` completes.  This module defines the data structures and the
-factory functions that populate them.
+``ga.run()`` completes.
 
-Log structure
--------------
-RunLogs
-  └── generations: list[GenerationLog]   — one entry per generation
-  └── best_fitness: float                — global best RMSE achieved
-  └── best_individual_configuration      — serialised triangle list
-
-GenerationLog fields of interest:
-  - generation_best_fitness  : best RMSE found in *this* generation
-  - global_best_fitness      : best RMSE found *so far* (never increases)
-  - evaluation_duration_seconds : time spent computing fitness this gen
-  - mutation_rate_used       : effective rate after adaptive scheduling
-  - mutated_offspring / mutated_triangles : how much mutation occurred
-  - immigrant_count          : how many random individuals were injected
-
-These logs are useful for diagnosing convergence issues: e.g. a flat
-global_best_fitness over many generations with a high mutation_rate_used
-suggests the search is stuck.
+GenerationLog captures: fitness values, evaluation duration, mutation rate,
+and offspring / mutation counts per generation.
 """
 
 from dataclasses import asdict
@@ -40,12 +23,7 @@ Individual = list[population.Triangle]
 # ---------------------------------------------------------------------------
 
 class SerializedTriangle(TypedDict):
-    """
-    JSON-serialisable representation of one triangle.
-
-    All integer fields are stored as plain Python ints so they can be
-    written directly to JSON without a custom encoder.
-    """
+    """JSON-serialisable representation of one triangle (all fields are plain ints)."""
 
     x1: int
     y1: int
@@ -60,12 +38,7 @@ class SerializedTriangle(TypedDict):
 
 
 class GenerationLog(TypedDict):
-    """
-    Per-generation telemetry captured during a GA run.
-
-    One entry is created at the end of each generation loop iteration.
-    Together these entries form a complete audit trail of the run.
-    """
+    """Per-generation telemetry captured during a GA run."""
 
     generation: int                        # 0-indexed generation number
     generation_best_fitness: float         # best fitness seen in this generation
@@ -79,17 +52,10 @@ class GenerationLog(TypedDict):
     offspring_created: int                 # total new individuals created
     mutated_offspring: int                 # individuals that had at least one change
     mutated_triangles: int                 # total triangle attributes changed
-    immigrant_count: int                   # random individuals injected this gen
 
 
 class RunLogs(TypedDict, total=False):
-    """
-    Top-level log payload for a complete GA run.
-
-    ``total=False`` means all keys are optional — the dict starts empty
-    and is populated at the end of ``GeneticAlgorithm.run()`` when logging
-    is enabled.
-    """
+    """Top-level log payload for a complete GA run (all keys optional, set by run())."""
 
     generations: list[GenerationLog]                        # all generation entries
     best_fitness: float                                      # final global best RMSE
@@ -113,19 +79,8 @@ def create_generation_log(
     offspring_created: int,
     mutated_offspring: int,
     mutated_triangles: int,
-    immigrant_count: int,
 ) -> GenerationLog:
-    """
-    Builds and returns one GenerationLog entry.
-
-    This is called once per generation inside the GA main loop.  All values
-    are passed explicitly so the function has no side effects and is easy
-    to test in isolation.
-
-    Returns:
-        A fully populated GenerationLog TypedDict.
-    """
-
+    """Build and return one GenerationLog entry (called once per generation)."""
     return {
         "generation":                   generation,
         "generation_best_fitness":      generation_best_fitness,
@@ -139,7 +94,6 @@ def create_generation_log(
         "offspring_created":            offspring_created,
         "mutated_offspring":            mutated_offspring,
         "mutated_triangles":            mutated_triangles,
-        "immigrant_count":              immigrant_count,
     }
 
 
@@ -148,21 +102,7 @@ def create_run_logs(
     best_fitness: float,
     best_individual: Individual,
 ) -> RunLogs:
-    """
-    Assembles the top-level RunLogs payload from a completed run.
-
-    Called once at the end of ``GeneticAlgorithm.run()`` when logging is
-    enabled.  Serialises the best individual to plain dicts so the result
-    can be written to JSON without a custom encoder.
-
-    Args:
-        generation_logs: All per-generation log entries collected during the run.
-        best_fitness:    Final global best fitness value.
-        best_individual: The best triangle individual found during the run.
-
-    Returns:
-        A RunLogs TypedDict ready for JSON serialisation or inspection.
-    """
+    """Assemble the top-level RunLogs payload from a completed run."""
 
     return {
         "generations":                    list(generation_logs),
@@ -172,25 +112,10 @@ def create_run_logs(
 
 
 def serialize_individual(individual: Individual) -> list[SerializedTriangle]:
-    """
-    Converts a list of Triangle dataclasses to JSON-serialisable dicts.
-
-    Each Triangle is converted via ``dataclasses.asdict`` and then all
-    values are cast to plain Python ints so they serialise correctly
-    (numpy integer types would fail with the default JSON encoder).
-
-    Args:
-        individual: List of Triangle objects to serialise.
-
-    Returns:
-        List of SerializedTriangle dicts with integer-typed fields.
-    """
-
+    """Convert a list of Triangle dataclasses to JSON-serialisable dicts."""
     return [
         cast(
             SerializedTriangle,
-            # asdict returns a dict of field_name → value
-            # We cast each value to int to strip any numpy integer wrapping
             {field_name: int(value) for field_name, value in asdict(triangle).items()},
         )
         for triangle in individual

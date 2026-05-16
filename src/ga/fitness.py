@@ -45,7 +45,6 @@ def compute_rmse(target: np.ndarray, generated: np.ndarray) -> float:
        per-channel pixel error across the whole image.
 
     A value of 0.0 means the rendered image is a perfect match.
-    A value of ~0.29 is typical for a randomly initialised individual.
     The GA minimises this value over successive generations.
 
     Args:

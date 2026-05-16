@@ -65,9 +65,6 @@ OperatorFunction = CrossoverFunction | MutationFunction
 # Re-export for callers that import from this module
 EvaluationBackend = evaluation.EvaluationBackend
 
-# (lower_bound, upper_bound) for adaptive mutation rates
-RateBounds = tuple[float, float]
-
 # Progress callback receives the GenerationLog dict each generation
 ProgressCallback = Callable[[logs.GenerationLog], None]
 
@@ -109,26 +106,7 @@ class GeneticAlgorithm:
         rate: float | None,
         operator: OperatorFunction | None,
     ) -> float:
-        """
-        Resolves an operator rate to a float, validating consistency.
-
-        Rules:
-          - If the operator is None, the rate is not needed → return 0.0.
-          - If the operator is set, the rate must also be provided.
-          - The rate must be in [0.0, 1.0].
-
-        Args:
-            rate_name: Name of the rate for error messages (e.g. "crossover_rate").
-            rate:      The raw rate value (may be None).
-            operator:  The associated operator function (may be None).
-
-        Returns:
-            The validated float rate, or 0.0 if no operator is configured.
-
-        Raises:
-            ValueError: If the operator is set but the rate is missing, or if
-                        the rate is outside [0, 1].
-        """
+        """Return 0.0 if no operator; validate and return the rate otherwise."""
 
         if rate is None:
             if operator is not None:
@@ -143,65 +121,11 @@ class GeneticAlgorithm:
         return float(rate)
 
     @staticmethod
-    def _validate_optional_rate_bounds(
-        mutation_rate_bounds: RateBounds | None,
-    ) -> RateBounds | None:
-        """
-        Validates the optional (lower, upper) bounds for adaptive mutation.
-
-        Both bounds must be in [0, 1] and lower ≤ upper.
-
-        Args:
-            mutation_rate_bounds: The (min, max) tuple or None.
-
-        Returns:
-            The validated tuple (as floats), or None if not provided.
-
-        Raises:
-            ValueError: If the bounds are malformed or out of range.
-        """
-
-        if mutation_rate_bounds is None:
-            return None
-
-        if (
-            not isinstance(mutation_rate_bounds, tuple)
-            or len(mutation_rate_bounds) != 2
-        ):
-            raise ValueError("mutation_rate_bounds must be a tuple of two floats.")
-
-        lower, upper = mutation_rate_bounds
-        if not 0.0 <= lower <= 1.0 or not 0.0 <= upper <= 1.0:
-            raise ValueError("mutation_rate_bounds values must be between 0 and 1.")
-        if lower > upper:
-            raise ValueError(
-                "mutation_rate_bounds lower bound must be <= upper bound."
-            )
-
-        return float(lower), float(upper)
-
-    @staticmethod
     def _normalize_initial_population(
         initial_population: list[Individual] | None,
         n_triangles: int,
     ) -> list[Individual] | None:
-        """
-        Validates and deep-copies an externally supplied initial population.
-
-        Deep-copying protects the caller's list from being mutated by the GA.
-        Validates that every individual has exactly ``n_triangles`` triangles
-        so mismatches are caught at configuration time.
-
-        Args:
-            initial_population: Caller-supplied population, or None.
-            n_triangles:        Expected number of triangles per individual.
-
-        Returns:
-            A deep copy of the population, or None if not provided.
-
-        Raises:
-            ValueError: If the list is empty or any individual has wrong length.
-        """
+        """Validate and deep-copy an external initial population, or return None."""
 
         if initial_population is None:
             return None
@@ -224,19 +148,7 @@ class GeneticAlgorithm:
         before_mutation: Individual,
         after_mutation: Individual,
     ) -> int:
-        """
-        Counts how many triangles actually changed after a mutation call.
-
-        Used for logging purposes: tracks how many triangles were modified
-        vs. how many were skipped by the mutation operator.
-
-        Args:
-            before_mutation: Deep copy of the individual before mutation.
-            after_mutation:  The individual after mutation was applied.
-
-        Returns:
-            Number of triangles that differ between before and after.
-        """
+        """Count how many triangles differ between before and after mutation."""
 
         if len(before_mutation) != len(after_mutation):
             # Length mismatch — treat all as changed
@@ -274,10 +186,6 @@ class GeneticAlgorithm:
             population.TRIANGLE_ALPHA_RANGE
         ),
         n_triangles: int = population.N_TRIANGLES,
-        adaptive_mutation: bool = False,
-        mutation_rate_bounds: RateBounds | None = None,
-        stagnation_window: int = 8,
-        random_immigrants: int = 0,
         initial_population: list[Individual] | None = None,
         seeded: bool = False,
         progress: bool = False,
@@ -308,14 +216,6 @@ class GeneticAlgorithm:
             chunksize:            Batch size for the process pool.
             triangle_alpha_range: Inclusive (min, max) alpha values for triangles.
             n_triangles:          Triangles per individual (default 100).
-            adaptive_mutation:    Automatically adjust mutation rate based on
-                                  whether the search is improving or stagnating.
-            mutation_rate_bounds: (min, max) rates for adaptive scheduling.
-                                  Auto-derived from mutation_rate if not given.
-            stagnation_window:    Generations without improvement before the
-                                  adaptive scheduler boosts the mutation rate.
-            random_immigrants:    Random individuals injected each generation
-                                  to maintain diversity (0 = disabled).
             initial_population:   Optional explicit generation-0 population.
                                   Useful for warm-starting from a prior run.
             seeded:               If True, initialise triangle colours by sampling
@@ -339,10 +239,6 @@ class GeneticAlgorithm:
             raise ValueError("elitism must be between 0 and population_size.")
         if n_triangles <= 0:
             raise ValueError("n_triangles must be greater than zero.")
-        if random_immigrants < 0 or random_immigrants >= population_size:
-            raise ValueError("random_immigrants must be in [0, population_size).")
-        if stagnation_window <= 0:
-            raise ValueError("stagnation_window must be greater than zero.")
         if progress_interval <= 0:
             raise ValueError("progress_interval must be greater than zero.")
         if progress_callback is not None and not callable(progress_callback):
@@ -360,8 +256,6 @@ class GeneticAlgorithm:
         if normalized_backend == "process":
             evaluation.validate_process_fitness_function(fitness_function)
 
-        # --- Store configuration ---
-        # Convert target to float32 once here; all fitness computations use float32
         self.target = target.astype(np.float32)
         self.fitness_function = fitness_function
         self.population_size = population_size
@@ -369,7 +263,6 @@ class GeneticAlgorithm:
         self.crossover_function = crossover_function
         self.mutation_function = mutation_function
 
-        # Resolve rates: returns 0.0 if the corresponding operator is None
         self.crossover_rate = self._resolve_operator_rate(
             "crossover_rate", crossover_rate, self.crossover_function
         )
@@ -377,26 +270,6 @@ class GeneticAlgorithm:
             "mutation_rate", mutation_rate, self.mutation_function
         )
 
-        # Adaptive mutation requires a mutation function to be present
-        if adaptive_mutation and self.mutation_function is None:
-            raise ValueError(
-                "adaptive_mutation requires mutation_function to be provided."
-            )
-        self.adaptive_mutation = adaptive_mutation
-        self.mutation_rate_bounds = self._validate_optional_rate_bounds(
-            mutation_rate_bounds
-        )
-
-        # Auto-derive bounds from the base rate when adaptive mode is on
-        # but no explicit bounds were provided:
-        #   lower = 25 % of base rate (minimum exploration floor)
-        #   upper = 200 % of base rate (maximum boost during stagnation)
-        if self.adaptive_mutation and self.mutation_rate_bounds is None:
-            base = self.mutation_rate
-            self.mutation_rate_bounds = (max(0.001, base * 0.25), min(1.0, base * 2.0))
-
-        self.stagnation_window = stagnation_window
-        self.random_immigrants = random_immigrants
         self.elitism = elitism
         self.selection_type = selection.normalize_selection_type(selection_type)
         self.logs = logs
@@ -416,17 +289,14 @@ class GeneticAlgorithm:
         self.progress_interval = progress_interval
         self.progress_callback = progress_callback
 
-        # Derive canvas dimensions from the target shape
         self.image_height, self.image_width = self.target.shape[:2]
 
-        # --- Mutable run state (reset by initialize()) ---
+        # Mutable run state — reset by initialize()
         self.population: list[Individual] = []
         self.best_individual: Individual | None = None
-        self.best_fitness = float("inf")      # starts at infinity, only decreases
-        self.history: list[float] = []        # global_best_fitness per generation
-        self.run_logs: logs.RunLogs = {}      # populated after run() when logs=True
-        self._current_mutation_rate = self.mutation_rate  # may change in adaptive mode
-        self._last_improvement_generation = 0             # used by stagnation detection
+        self.best_fitness = float("inf")
+        self.history: list[float] = []
+        self.run_logs: logs.RunLogs = {}
 
     # -----------------------------------------------------------------------
     # Public lifecycle methods
@@ -474,13 +344,10 @@ class GeneticAlgorithm:
                 )
             self.population = seeded
 
-        # Reset all tracked state so a fresh run starts clean
         self.best_individual = None
         self.best_fitness = float("inf")
         self.history = []
         self.run_logs = {}
-        self._current_mutation_rate = self.mutation_rate
-        self._last_improvement_generation = 0
 
     def evaluate(self) -> list[float]:
         """
@@ -502,15 +369,7 @@ class GeneticAlgorithm:
         self,
         executor: evaluation.Executor | None = None,
     ) -> list[float]:
-        """
-        Evaluates the population and updates the tracked global best.
-
-        Args:
-            executor: An active executor for non-sequential backends, or None.
-
-        Returns:
-            List of fitness values in population order.
-        """
+        """Evaluate the population and update the tracked global best."""
 
         if not self.population:
             raise ValueError(
@@ -519,13 +378,11 @@ class GeneticAlgorithm:
 
         fitness_values = self._compute_population_fitness(executor)
 
-        # Scan all individuals and update the global best if a new one is found
         for individual, fitness_value in zip(
             self.population, fitness_values, strict=True
         ):
             if fitness_value < self.best_fitness:
-                self.best_fitness = fitness_value
-                # Deep copy so later mutations don't corrupt the tracked best
+                self.best_fitness    = fitness_value
                 self.best_individual = copy.deepcopy(individual)
 
         return fitness_values
@@ -534,23 +391,9 @@ class GeneticAlgorithm:
         self,
         executor: evaluation.Executor | None = None,
     ) -> list[float]:
-        """
-        Dispatches fitness computation to the configured backend.
-
-        When called from run(), the executor is passed in directly to avoid
-        creating and destroying a new pool for every generation.  The public
-        evaluate() method calls this without an executor, which creates a
-        short-lived pool (or runs sequentially).
-
-        Args:
-            executor: Pre-created executor, or None to create/use inline.
-
-        Returns:
-            List of fitness values for the current population.
-        """
+        """Dispatch fitness computation to the configured backend."""
 
         if self.evaluation_backend == "sequential":
-            # No parallelism — evaluate directly on the calling thread
             return evaluation.compute_population_fitness_sequential(
                 self.population,
                 self.target,
@@ -560,7 +403,6 @@ class GeneticAlgorithm:
             )
 
         if executor is None:
-            # Create a short-lived pool just for this one evaluation call
             with evaluation.create_evaluation_executor(
                 self.evaluation_backend,
                 self.n_jobs,
@@ -580,7 +422,6 @@ class GeneticAlgorithm:
                     self.chunksize,
                 )
 
-        # Reuse the long-lived executor passed in from run()
         return evaluation.compute_population_fitness_with_executor(
             executor,
             self.evaluation_backend,
@@ -592,120 +433,18 @@ class GeneticAlgorithm:
             self.chunksize,
         )
 
-    def _update_mutation_rate(self, generation: int) -> None:
-        """
-        Updates the effective mutation rate for this generation.
-
-        In non-adaptive mode the rate stays constant at self.mutation_rate.
-
-        In adaptive mode the rate is scheduled as a linear decay from
-        upper_bound (generation 0) down to lower_bound (last generation).
-        If the search has not improved for ``stagnation_window`` generations,
-        the rate is boosted by 35 % to help escape the local optimum.
-        The final rate is always clamped to [lower_bound, upper_bound].
-
-        Args:
-            generation: 0-indexed current generation number.
-        """
-
-        if not self.adaptive_mutation or self.mutation_function is None:
-            # No adaptation — keep the rate fixed
-            self._current_mutation_rate = self.mutation_rate
-            return
-
-        if self.mutation_rate_bounds is None:
-            raise RuntimeError("mutation_rate_bounds must be set in adaptive mode.")
-
-        lower_bound, upper_bound = self.mutation_rate_bounds
-
-        # Linear decay from upper_bound at gen 0 to lower_bound at last gen.
-        # progress ∈ [0, 1]: 0 = start of run, 1 = end of run.
-        progress = generation / max(1, self.generations - 1)
-        scheduled_rate = upper_bound - ((upper_bound - lower_bound) * progress)
-
-        # Stagnation boost: if there has been no improvement for
-        # stagnation_window generations, increase the rate by 35 %
-        if generation - self._last_improvement_generation >= self.stagnation_window:
-            scheduled_rate = min(upper_bound, scheduled_rate * 1.35)
-
-        # Clamp to the configured bounds and store for use this generation
-        self._current_mutation_rate = float(
-            min(upper_bound, max(lower_bound, scheduled_rate))
-        )
-
-    def _inject_random_immigrants(self, next_population: list[Individual]) -> int:
-        """
-        Injects fully random individuals into the nascent next generation.
-
-        Random immigrants prevent premature convergence by continuously
-        introducing new genetic material.  They replace slots that would
-        otherwise be filled by crossover/mutation offspring.
-
-        Only injects up to the number of available empty slots so the
-        next generation never exceeds ``population_size``.
-
-        Args:
-            next_population: The partially-built next generation list.
-                             Modified in place.
-
-        Returns:
-            Number of immigrants actually injected.
-        """
-
-        if self.random_immigrants == 0:
-            return 0
-
-        # Don't overflow the population beyond its configured size
-        available_slots = self.population_size - len(next_population)
-        if available_slots <= 0:
-            return 0
-
-        immigrant_count = min(self.random_immigrants, available_slots)
-        next_population.extend(
-            population.create_population(
-                population_size=immigrant_count,
-                n_triangles=self.n_triangles,
-                image_width=self.image_width,
-                image_height=self.image_height,
-                triangle_alpha_range=self.triangle_alpha_range,
-            )
-        )
-        return immigrant_count
-
     def select_parents(
         self,
         fitness_values: list[float],
     ) -> tuple[Individual, Individual]:
         """
-        Selects a pair of parents for crossover.
-
-        The default implementation selects both parents independently using
-        the configured selection strategy.  Subclasses can override this
-        method to implement restricted mating — e.g. choosing parent2 based
-        on its genetic distance to parent1.
-
-        Args:
-            fitness_values: Current generation fitness values (lower = better).
-
-        Returns:
-            Tuple of (parent1, parent2).
+        Select two parents independently. Subclasses override this for restricted mating.
         """
 
         return self.select_parent(fitness_values), self.select_parent(fitness_values)
 
     def select_parent(self, fitness_values: list[float]) -> Individual:
-        """
-        Selects one parent from the current population using the configured strategy.
-
-        Delegates to the selection module so the GA class itself does not
-        need to know the details of each selection algorithm.
-
-        Args:
-            fitness_values: Current generation fitness values (lower = better).
-
-        Returns:
-            One individual chosen according to the selection strategy.
-        """
+        """Select one parent using the configured selection strategy."""
 
         return selection.select_parent(
             self.population,
@@ -720,28 +459,13 @@ class GeneticAlgorithm:
         parent2: Individual,
     ) -> list[Individual]:
         """
-        Applies the configured crossover operator and normalises its output.
+        Apply crossover and return a list of children (deep-copied).
 
-        The crossover operator may return one child, a tuple of children, or
-        a list of children.  This method normalises all three forms to a plain
-        list so the main loop can iterate uniformly.
-
-        If no crossover function was configured, one parent is cloned at random
-        (pure reproduction — the child is an exact copy of a parent).
-
-        Args:
-            parent1: First selected parent individual.
-            parent2: Second selected parent individual.
-
-        Returns:
-            A list of one or more child individuals (deep-copied).
-
-        Raises:
-            ValueError: If the crossover function returns no children.
+        Normalises operator output (single child, tuple, or list) to a flat list.
+        If no crossover function is configured, one parent is cloned at random.
         """
 
         if self.crossover_function is None:
-            # No crossover configured — clone one parent at random
             fallback_parent = parent1 if np.random.random() < 0.5 else parent2
             return [copy.deepcopy(fallback_parent)]
 
@@ -751,17 +475,9 @@ class GeneticAlgorithm:
             self.crossover_rate,
         )
 
-        # Normalise the return value to a flat list of individuals:
-        # - tuple → convert to list
-        # - list of Triangles (one child) → wrap in outer list
-        # - list of lists (multiple children) → use as-is
         if isinstance(crossover_result, tuple):
             children = list(crossover_result)
-        elif crossover_result and isinstance(
-            crossover_result[0],
-            population.Triangle,
-        ):
-            # The operator returned a single individual (flat list of Triangles)
+        elif crossover_result and isinstance(crossover_result[0], population.Triangle):
             children = [crossover_result]
         else:
             children = list(crossover_result)
@@ -772,21 +488,7 @@ class GeneticAlgorithm:
         return copy.deepcopy(children)
 
     def mutate(self, individual: Individual) -> tuple[Individual, int]:
-        """
-        Applies the configured mutation function to one individual.
-
-        Returns both the (potentially modified) individual and a count of
-        how many triangles were actually changed, which is used for logging.
-
-        If no mutation function was configured, the individual is returned
-        unchanged with a change count of 0.
-
-        Args:
-            individual: The child individual to mutate.
-
-        Returns:
-            (mutated_individual, changed_triangle_count)
-        """
+        """Apply mutation and return (mutated_individual, changed_triangle_count)."""
 
         if self.mutation_function is None:
             return individual, 0
@@ -795,7 +497,7 @@ class GeneticAlgorithm:
         before_mutation = copy.deepcopy(individual)
         mutated_individual = self.mutation_function(
             individual,
-            self._current_mutation_rate,
+            self.mutation_rate,
             self.image_width,
             self.image_height,
             self.triangle_alpha_range,
@@ -808,15 +510,7 @@ class GeneticAlgorithm:
         return mutated_individual, changed_triangles
 
     def _emit_progress(self, generation_log: logs.GenerationLog) -> None:
-        """
-        Optionally prints a generation summary and/or calls the progress callback.
-
-        Controls whether output is emitted based on ``progress``,
-        ``progress_interval``, and ``progress_callback`` settings.
-
-        Args:
-            generation_log: The log entry for the just-completed generation.
-        """
+        """Fire progress_callback and optionally print a generation summary."""
 
         # Always fire the callback if one was registered, regardless of interval
         if self.progress_callback is not None:
@@ -899,59 +593,34 @@ class GeneticAlgorithm:
                 )
 
             for generation in range(self.generations):
-                # Track the previous best so we can detect improvement
-                previous_best = float(self.best_fitness)
-
-                # --- Step 1: Evaluate current population ---
                 evaluation_started = time.perf_counter()
                 fitness_values = self._evaluate_population(executor)
                 evaluation_duration_seconds = (
                     time.perf_counter() - evaluation_started
                 )
 
-                # Sort indices from best (lowest RMSE) to worst (highest RMSE)
-                ranked_indices = np.argsort(fitness_values)
+                ranked_indices           = np.argsort(fitness_values)
                 generation_best_fitness = float(fitness_values[int(ranked_indices[0])])
-                global_best_fitness = float(self.best_fitness)
+                global_best_fitness     = float(self.best_fitness)
 
-                # Record the generation in which improvement last occurred
-                # (used by the adaptive mutation scheduler)
-                if global_best_fitness < previous_best:
-                    self._last_improvement_generation = generation
-
-                # --- Step 2: Update adaptive mutation rate ---
-                self._update_mutation_rate(generation)
-
-                # Append the current global best to the convergence history
                 self.history.append(global_best_fitness)
 
-                # Counters reset each generation for per-generation logging
                 offspring_created = 0
                 mutated_offspring = 0
                 mutated_triangles = 0
-                immigrant_count = 0
 
-                # --- Step 3: Build the next generation ---
-                # Skip for the final generation since we don't need a "next" pop
                 if generation != self.generations - 1:
 
-                    # Elitism: copy the best `elitism` individuals unchanged.
-                    # They keep their position at the front of the next population.
                     next_population = [
                         copy.deepcopy(self.population[int(index)])
                         for index in ranked_indices[: self.elitism]
                     ]
 
-                    # Inject random immigrants to maintain diversity
-                    immigrant_count = self._inject_random_immigrants(next_population)
-
-                    # Fill remaining slots with crossover + mutation offspring
                     while len(next_population) < self.population_size:
                         parent1, parent2 = self.select_parents(fitness_values)
                         children = self.crossover(parent1, parent2)
 
                         for child in children:
-                            # Stop adding children once the population is full
                             if len(next_population) >= self.population_size:
                                 break
                             child, changed_triangles = self.mutate(child)
@@ -961,11 +630,8 @@ class GeneticAlgorithm:
                                 mutated_offspring += 1
                             next_population.append(child)
 
-                    # Truncate to exactly population_size in case crossover
-                    # produced one extra child that pushed us over
                     self.population = next_population[: self.population_size]
 
-                # --- Step 4: Log and emit progress ---
                 generation_log = logs.create_generation_log(
                     generation=generation,
                     generation_best_fitness=generation_best_fitness,
@@ -975,11 +641,10 @@ class GeneticAlgorithm:
                     n_jobs=self.n_jobs,
                     chunksize=self.chunksize,
                     evaluation_duration_seconds=evaluation_duration_seconds,
-                    mutation_rate_used=float(self._current_mutation_rate),
+                    mutation_rate_used=float(self.mutation_rate),
                     offspring_created=offspring_created,
                     mutated_offspring=mutated_offspring,
                     mutated_triangles=mutated_triangles,
-                    immigrant_count=immigrant_count,
                 )
 
                 if self.logs:
@@ -988,7 +653,6 @@ class GeneticAlgorithm:
                 self._emit_progress(generation_log)
 
         finally:
-            # Always shut down the executor, even if an exception occurred
             if executor is not None:
                 executor.shutdown()
 
@@ -997,7 +661,6 @@ class GeneticAlgorithm:
                 "The genetic algorithm did not produce a best individual."
             )
 
-        # Assemble the detailed run logs if logging was requested
         if self.logs:
             self.run_logs = logs.create_run_logs(
                 generation_logs,
@@ -1012,34 +675,19 @@ class GeneticAlgorithm:
     # -----------------------------------------------------------------------
 
     def params_dict(self) -> dict:
-        """
-        Returns a JSON-serialisable dict of all configuration parameters.
-
-        Used by the results module to record what settings produced a given
-        run so results can be compared across experiments.
-
-        Returns:
-            Dict mapping parameter names to their values.
-        """
-
+        """Return a JSON-serialisable dict of all configuration parameters."""
         return {
-            "population_size":       self.population_size,
-            "generations":           self.generations,
-            "n_triangles":           self.n_triangles,
-            "crossover_rate":        self.crossover_rate,
-            "mutation_rate":         self.mutation_rate,
-            "mutation_function":     getattr(self.mutation_function, "__name__", None),
-            "crossover_function":    getattr(self.crossover_function, "__name__", None),
-            "elitism":               self.elitism,
-            "selection_type":        self.selection_type,
-            "adaptive_mutation":     self.adaptive_mutation,
-            "mutation_rate_bounds":  self.mutation_rate_bounds,
-            "stagnation_window":     self.stagnation_window,
-            "random_immigrants":     self.random_immigrants,
-            "local_search_steps":    0,   # kept for backwards compatibility with saved JSONs
-            "max_edge_length":       None,
-            "triangle_alpha_range":  list(self.triangle_alpha_range),
-            "evaluation_backend":    self.evaluation_backend,
-            "n_jobs":                self.n_jobs,
-            "initialization":        "seeded" if self.seeded else "random",
+            "population_size":      self.population_size,
+            "generations":          self.generations,
+            "n_triangles":          self.n_triangles,
+            "crossover_rate":       self.crossover_rate,
+            "mutation_rate":        self.mutation_rate,
+            "mutation_function":    getattr(self.mutation_function, "__name__", None),
+            "crossover_function":   getattr(self.crossover_function, "__name__", None),
+            "elitism":              self.elitism,
+            "selection_type":       self.selection_type,
+            "triangle_alpha_range": list(self.triangle_alpha_range),
+            "evaluation_backend":   self.evaluation_backend,
+            "n_jobs":               self.n_jobs,
+            "initialization":       "seeded" if self.seeded else "random",
         }

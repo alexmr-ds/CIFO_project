@@ -1,33 +1,44 @@
 """Exports the genetic algorithm package public interface."""
 
-from . import cross_over, diversity, fitness, mutate, parallel, results, workflow
+from . import cross_over, diversity, fitness, mutate, parallel
 from .algorithm import GeneticAlgorithm
-from .diversity import FitnessSharingGA, RestrictedMatingGA
-from .results import load_all_runs, runs_dataframe, save_run
-from .workflow import StageConfig, StageResult, StagedRunResult, run_staged_triangle_optimization
-from .parallel import GAConfig, TrialSummary, run_single_ga, run_trials, run_grid_search
+from .diversity import FitnessSharingGA, RestrictedMatingGA, FitnessSharingRestrictedMatingGA
+from .parallel import GAConfig, TrialSummary, run_single_ga, run_trials, run_grid_search, run_variants_batch
+from .plotting import (
+    plot_grid_search_results,
+    plot_diversity_comparison,
+    plot_method_comparison,
+    print_grid_search_summary,
+    print_method_comparison_summary,
+    print_diversity_summary,
+    plot_single_diversity,
+    print_single_diversity_summary,
+    plot_cumulative_convergence,
+)
 
 __all__ = [
     "GeneticAlgorithm",
     "FitnessSharingGA",
     "RestrictedMatingGA",
+    "FitnessSharingRestrictedMatingGA",
     "diversity",
     "fitness",
     "cross_over",
     "mutate",
-    "results",
-    "save_run",
-    "load_all_runs",
-    "runs_dataframe",
-    "workflow",
-    "StageConfig",
-    "StageResult",
-    "StagedRunResult",
-    "run_staged_triangle_optimization",
     "parallel",
     "GAConfig",
     "TrialSummary",
     "run_single_ga",
     "run_trials",
     "run_grid_search",
+    "run_variants_batch",
+    "plot_grid_search_results",
+    "plot_diversity_comparison",
+    "plot_method_comparison",
+    "print_grid_search_summary",
+    "print_method_comparison_summary",
+    "print_diversity_summary",
+    "plot_single_diversity",
+    "print_single_diversity_summary",
+    "plot_cumulative_convergence",
 ]

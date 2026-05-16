@@ -7,14 +7,18 @@ from run().  They only change *how* selection pressure is shaped.
 
 FitnessSharingGA
     Penalises individuals that live in crowded parts of the search space by
-    inflating their effective RMSE before selection.  Multiple good-but-
-    different solutions can coexist because no single niche can dominate.
+    inflating their effective RMSE before selection.
 
 RestrictedMatingGA
     Controls which pairs of individuals are allowed to mate.  After selecting
     parent1 normally, parent2 is chosen from a pool of candidates using one
     of three strategies (unidirectional, bidirectional, best_partial_match).
 """
+
+import json
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 
 import numpy as np
 
@@ -54,6 +58,63 @@ def _l1(v1: np.ndarray, v2: np.ndarray) -> float:
     return float(np.mean(np.abs(v1 - v2)))
 
 
+def _col_entropy(col: np.ndarray, n_bins: int = 20) -> float:
+    """Shannon entropy (bits) of a 1-D array of normalised values in [0, 1]."""
+    hist, _ = np.histogram(col, bins=n_bins, range=(0.0, 1.0))
+    p = hist / hist.sum()
+    p = p[p > 0]
+    return float(-np.sum(p * np.log2(p)))
+
+
+def _make_diversity_callback(
+    log: dict, ga_ref: list, W: int, H: int, pheno_interval: int, pheno_scale: float
+):
+    """
+    Return a progress_callback that records genotypic and phenotypic diversity.
+
+    The callback captures log and ga_ref by reference so it can append to
+    them each generation without any extra arguments.
+    """
+    from .. import rendering as _rendering
+
+    def _cb(gl: dict) -> None:
+        ga  = ga_ref[0]
+        gen = gl["generation"]
+        pop = ga.population
+        G   = np.array([_to_norm_vec(ind, W, H) for ind in pop])
+
+        log["gen"].append(gen)
+        log["best_fitness"].append(gl["global_best_fitness"])
+        log["geno_var"].append(float(np.mean(np.var(G, axis=0))))
+        log["geno_entropy"].append(
+            float(np.mean([_col_entropy(G[:, d]) for d in range(G.shape[1])]))
+        )
+
+        if gen % pheno_interval == 0:
+            ph   = max(1, int(H * pheno_scale))
+            pw   = max(1, int(W * pheno_scale))
+            imgs = np.stack([
+                np.array(_rendering.render_individual(ind, pw, ph), dtype=np.float32) / 255.0
+                for ind in pop
+            ])
+            log["pheno_gen"].append(gen)
+            log["pheno_var"].append(float(np.mean(np.var(imgs, axis=0))))
+
+            n_sample  = min(400, ph * pw)
+            px_idx    = np.random.choice(ph * pw, n_sample, replace=False)
+            chan_ents: list[float] = []
+            for c in range(3):
+                ch = imgs[:, :, :, c].reshape(len(pop), -1)[:, px_idx]
+                for px_vals in ch.T:
+                    hist, _ = np.histogram(px_vals, bins=16, range=(0.0, 1.0))
+                    p = hist / hist.sum()
+                    p = p[p > 0]
+                    chan_ents.append(float(-np.sum(p * np.log2(p))))
+            log["pheno_entropy"].append(float(np.mean(chan_ents)))
+
+    return _cb
+
+
 # ---------------------------------------------------------------------------
 # Fitness Sharing
 # ---------------------------------------------------------------------------
@@ -84,11 +145,8 @@ class FitnessSharingGA(GeneticAlgorithm):
     4. Shared fitness  =  raw_fitness × niche_count   (higher = worse for RMSE).
 
     Args:
-        sigma_share: Niche radius in [0, 1] Hamming space.  Individuals closer
-                     than sigma_share are considered part of the same niche.
-                     Smaller values create finer, more isolated niches.
-        n_bins:      Number of quantisation bins per gene.  More bins give a
-                     finer Hamming resolution but more computation.
+        sigma_share: Niche radius in [0, 1] Hamming space.
+        n_bins:      Number of quantisation bins per gene.
     """
 
     def __init__(self, *args, sigma_share: float = 0.3, n_bins: int = 8, **kwargs):
@@ -96,18 +154,15 @@ class FitnessSharingGA(GeneticAlgorithm):
         self.sigma_share = sigma_share
         self.n_bins      = n_bins
 
-    # Override only _evaluate_population so the rest of run() is unchanged.
     def _evaluate_population(self, executor=None) -> list[float]:
-        """Evaluate population, then inflate fitness by niche count."""
-        # Parent call updates best_fitness / best_individual with raw RMSE
+        """Evaluate population with raw RMSE, then inflate by niche count."""
         raw_fitness = super()._evaluate_population(executor)
         return self._apply_sharing(raw_fitness)
 
     def _apply_sharing(self, raw_fitness: list[float]) -> list[float]:
         """Return shared fitness values (raw × niche_count for each individual)."""
         pop = self.population
-        # Quantise every individual once
-        Q = [
+        Q   = [
             _quantize(_to_norm_vec(ind, self.image_width, self.image_height), self.n_bins)
             for ind in pop
         ]
@@ -117,7 +172,6 @@ class FitnessSharingGA(GeneticAlgorithm):
                 max(0.0, 1.0 - _hamming(Q[i], Q[j]) / self.sigma_share)
                 for j in range(len(pop))
             )
-            # niche_count >= 1 (the individual always shares with itself)
             shared.append(raw_f * max(1.0, niche_count))
         return shared
 
@@ -134,30 +188,22 @@ class RestrictedMatingGA(GeneticAlgorithm):
     chosen from a pool of K tournament candidates using one of three strategies:
 
     ``"unidirectional"``
-        parent1 is chosen normally.
         parent2 = the pool candidate MOST genetically distant from parent1.
-        One-directional: only parent1 enforces the distance preference.
 
     ``"bidirectional"``
         Sample K candidates for each parent slot independently.
         Pick the pair (p1, p2) with the maximum mutual genetic distance.
-        Symmetric: both parents are pushed to be as different as possible.
 
     ``"best_partial_match"``
-        parent1 is chosen normally.
-        The gene vector is split into two equal halves (first 50 % of
-        triangles / last 50 %).
-        parent2 = the pool candidate that maximises::
+        parent2 maximises::
 
             distance_in_first_half  −  distance_in_second_half
 
-        This encourages recombining diverse *background* triangles (first
-        half) while preserving a shared foundation in the *detail* triangles
-        (second half).
+        Encourages diverse background triangles while preserving a shared
+        foundation in the detail triangles.
 
-    In all cases the genetic distance is the mean absolute difference of the
-    normalised [0, 1] gene vectors (L1 distance), which is cheaper to compute
-    than Hamming and more sensitive to small continuous changes.
+    Genetic distance uses mean absolute difference of normalised gene vectors
+    (L1), which is cheaper and more sensitive than Hamming for continuous values.
 
     Args:
         mating_type:    One of ``"unidirectional"``, ``"bidirectional"``,
@@ -182,8 +228,6 @@ class RestrictedMatingGA(GeneticAlgorithm):
         self.mating_type    = mating_type
         self.candidate_pool = candidate_pool
 
-    # -- helpers -------------------------------------------------------------
-
     def _vec(self, ind: Individual) -> np.ndarray:
         return _to_norm_vec(ind, self.image_width, self.image_height)
 
@@ -191,11 +235,8 @@ class RestrictedMatingGA(GeneticAlgorithm):
         """Sample candidate_pool individuals via the configured selection."""
         return [self.select_parent(fitness_values) for _ in range(self.candidate_pool)]
 
-    # -- Override select_parents from GeneticAlgorithm -----------------------
-
     def select_parents(
-        self,
-        fitness_values: list[float],
+        self, fitness_values: list[float]
     ) -> tuple[Individual, Individual]:
         """Dispatch to the configured mating strategy."""
         if self.mating_type == "unidirectional":
@@ -203,8 +244,6 @@ class RestrictedMatingGA(GeneticAlgorithm):
         if self.mating_type == "bidirectional":
             return self._bidirectional(fitness_values)
         return self._best_partial_match(fitness_values)
-
-    # -- Mating strategies ---------------------------------------------------
 
     def _unidirectional(
         self, fitness_values: list[float]
@@ -236,13 +275,7 @@ class RestrictedMatingGA(GeneticAlgorithm):
     def _best_partial_match(
         self, fitness_values: list[float]
     ) -> tuple[Individual, Individual]:
-        """
-        parent1 normal; parent2 scores highest on::
-
-            dist(first_half)  −  dist(second_half)
-
-        — diverse in the first 50 % of genes, similar in the last 50 %.
-        """
+        """parent2 scores highest on dist(first_half) − dist(second_half)."""
         parent1 = self.select_parent(fitness_values)
         v1      = self._vec(parent1)
         mid     = len(v1) // 2
@@ -255,3 +288,179 @@ class RestrictedMatingGA(GeneticAlgorithm):
 
         parent2 = max(pool, key=_score)
         return parent1, parent2
+
+
+class FitnessSharingRestrictedMatingGA(FitnessSharingGA, RestrictedMatingGA):
+    """Combines fitness sharing and restricted mating in a single GA.
+
+    ``FitnessSharingGA._evaluate_population`` applies the niche penalty;
+    ``RestrictedMatingGA.select_parents`` enforces distance-based pairing.
+    Both layers are active simultaneously — Python MRO wires them together.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Diversity tracking
+# ---------------------------------------------------------------------------
+
+def run_diversity_trial(
+    ga_class,
+    pipeline: str,
+    extra_kwargs: dict,
+    base_dict: dict,
+    results_dir: Path | str,
+    image_height: int,
+    image_width: int,
+    pheno_interval: int = 5,
+    pheno_scale: float = 0.20,
+) -> dict:
+    """
+    Run one diversity-tracked GA trial and cache the result to disk.
+
+    Returns the cached log immediately on subsequent calls with the same pipeline.
+
+    Tracked signals per generation: gen, best_fitness, geno_var, geno_entropy,
+    pheno_gen, pheno_var, pheno_entropy.
+    """
+    results_dir = Path(results_dir)
+    cache = results_dir / f"{pipeline}_diversity.json"
+
+    if cache.exists():
+        with open(cache) as f:
+            log = json.load(f)
+        print(f"✓ '{pipeline}' diversity — loaded from cache")
+        return log
+
+    H, W = image_height, image_width
+    log: dict = dict(
+        gen=[], best_fitness=[],
+        geno_var=[], geno_entropy=[],
+        pheno_gen=[], pheno_var=[], pheno_entropy=[],
+    )
+    _ref: list = [None]
+
+    ga = ga_class(
+        **{**base_dict, **extra_kwargs},
+        progress_callback=_make_diversity_callback(log, _ref, W, H, pheno_interval, pheno_scale),
+    )
+    _ref[0] = ga
+    ga.run()
+
+    results_dir.mkdir(parents=True, exist_ok=True)
+    with open(cache, "w") as f:
+        json.dump(log, f)
+    print(f"  ✓ '{pipeline}' diversity done — saved to cache")
+    return log
+
+
+# Must be module-level so ProcessPoolExecutor can pickle it on macOS spawn.
+def _run_diversity_worker(
+    ga_class_name: str,
+    pipeline: str,
+    extra_kwargs: dict,
+    base_dict: dict,
+    image_height: int,
+    image_width: int,
+    pheno_interval: int,
+    pheno_scale: float,
+) -> tuple[str, dict]:
+    """Worker that runs one diversity-tracked GA trial; returns (pipeline, log)."""
+    if ga_class_name == "GeneticAlgorithm":
+        from .algorithm import GeneticAlgorithm as _cls
+    elif ga_class_name == "FitnessSharingGA":
+        _cls = FitnessSharingGA
+    elif ga_class_name == "RestrictedMatingGA":
+        _cls = RestrictedMatingGA
+    elif ga_class_name == "FitnessSharingRestrictedMatingGA":
+        _cls = FitnessSharingRestrictedMatingGA
+    else:
+        raise ValueError(f"Unknown GA class: {ga_class_name!r}")
+
+    H, W = image_height, image_width
+    log: dict = dict(
+        gen=[], best_fitness=[],
+        geno_var=[], geno_entropy=[],
+        pheno_gen=[], pheno_var=[], pheno_entropy=[],
+    )
+    _ref: list = [None]
+
+    ga = _cls(
+        **{**base_dict, **extra_kwargs},
+        progress_callback=_make_diversity_callback(log, _ref, W, H, pheno_interval, pheno_scale),
+        evaluation_backend="sequential",
+        progress=False,
+    )
+    _ref[0] = ga
+    ga.run()
+    return pipeline, log
+
+
+def run_diversity_batch(
+    configs: dict[str, tuple[str, str, dict]],
+    base_dict: dict,
+    results_dir: Path | str,
+    image_height: int,
+    image_width: int,
+    pheno_interval: int = 5,
+    pheno_scale: float = 0.20,
+) -> dict[str, dict]:
+    """
+    Run one diversity trial per config using a single shared ProcessPoolExecutor.
+
+    Cached configs are loaded from disk instantly; only uncached ones are dispatched.
+
+    Args:
+        configs:        Ordered dict mapping display_label →
+                        ``(pipeline, ga_class_name, extra_kwargs)``.
+        base_dict:      Base GA constructor arguments shared by all configs.
+        results_dir:    Directory where ``{pipeline}_diversity.json`` files live.
+        image_height:   Canvas height in pixels.
+        image_width:    Canvas width in pixels.
+        pheno_interval: Render every N generations for phenotypic metrics.
+        pheno_scale:    Downscale factor for rendered images.
+
+    Returns:
+        Dict mapping each display_label → diversity log dict.
+    """
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    logs: dict[str, dict]              = {}
+    to_run: dict[str, tuple[str, str, dict]] = {}
+
+    for label, (pipeline, ga_class_name, extra_kwargs) in configs.items():
+        cache = results_dir / f"{pipeline}_diversity.json"
+        if cache.exists():
+            with open(cache) as f:
+                logs[label] = json.load(f)
+            print(f"  ✓ '{pipeline}' diversity — loaded from cache", flush=True)
+        else:
+            to_run[label] = (pipeline, ga_class_name, extra_kwargs)
+            print(f"  ~ '{pipeline}' diversity — will run", flush=True)
+
+    if not to_run:
+        return logs
+
+    n       = len(to_run)
+    workers = min(n, os.cpu_count() or 1)
+    print(f"  dispatching {n} diversity trial(s)  workers={workers}", flush=True)
+
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                _run_diversity_worker,
+                ga_class_name, pipeline, extra_kwargs, base_dict,
+                image_height, image_width, pheno_interval, pheno_scale,
+            ): label
+            for label, (pipeline, ga_class_name, extra_kwargs) in to_run.items()
+        }
+        for future in as_completed(futures):
+            label          = futures[future]
+            pipeline, log  = future.result()
+            logs[label]    = log
+            cache          = results_dir / f"{pipeline}_diversity.json"
+            with open(cache, "w") as f:
+                json.dump(log, f)
+            print(f"  ✓ '{pipeline}' diversity done — saved to cache", flush=True)
+
+    return logs
