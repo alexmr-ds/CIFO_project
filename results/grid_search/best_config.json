@@ -1,0 +1,47 @@
+{
+    "schema_version": 1,
+    "ga_class": "FitnessSharingRestrictedMatingGA",
+    "constructor_kwargs": {
+        "population_size": 250,
+        "generations": 500,
+        "elitism": 5,
+        "selection_type": "tournament",
+        "triangle_alpha_range": [
+            5,
+            255
+        ],
+        "mutation_rate": 0.1,
+        "crossover_rate": 0.9,
+        "sigma_share": 0.3,
+        "n_bins": 8,
+        "candidate_pool": 5,
+        "mating_type": "unidirectional",
+        "evaluation_backend": "process",
+        "n_jobs": 8,
+        "chunksize": 5
+    },
+    "operators": {
+        "fitness_function": "compute_rmse",
+        "mutation_function": "random_triangle_mutation",
+        "crossover_function": "pmx_crossover"
+    },
+    "run": {
+        "base_seed": 73,
+        "selected_seed": 1076,
+        "selected_trial_id": 3,
+        "early_stopping_patience": 50,
+        "n_trials": 5,
+        "objective": "minimize"
+    },
+    "selection_result": {
+        "setup_id": 10,
+        "mean_final_best_fitness": 0.14350788295269007,
+        "std_final_best_fitness": 0.0024247825571141893,
+        "min_final_best_fitness": 0.1396898031234741,
+        "max_final_best_fitness": 0.146189197897911,
+        "mean_generations_run": 500.0,
+        "stopped_early_trials": 0,
+        "mean_runtime_seconds": 660.9544466167994,
+        "completed_trials": 5
+    }
+}
