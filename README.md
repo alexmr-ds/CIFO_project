@@ -1,31 +1,71 @@
-# CIFO Project
+# CIFO Project — Triangle Image Approximation with Genetic Algorithms
 
-Notebook-first prototype for approximating a target image with semi-transparent triangles using a genetic algorithm. The pipeline covers image loading, triangle-based individual generation, rendering, RMSE fitness evaluation, and a parallel experiment framework with file-based result caching.
-
-## Project Status
-
-- Core GA pipeline is working: image loading, population generation, rendering, fitness evaluation, and GA orchestration.
-- The main workflow is `notebooks/Step_by_step_exploration.ipynb`, which runs systematic parameter contribution analysis (baseline, population size, elitism, crossover type/rate, mutation rate) with 5 trials each and cached results.
-- Parallel experiment infrastructure lives in `src/ga/parallel.py` (`GAConfig`, `run_trials`, `run_grid_search`).
-- Results are persisted as timestamped JSON files under `results/<experiment>/` and loaded automatically on re-run so cells are instant when nothing changed.
-- Available crossover operators: `single_point_crossover`, `single_point_crossover_two_children`, `two_point_crossover`, `two_point_crossover_two_children`.
-- Available mutation operator: `random_triangle_mutation`.
-- Selection strategies: tournament, ranking, roulette-wheel.
+Approximating Vermeer's *Girl with a Pearl Earring* using a population of 100 opaque triangles, evolved by a genetic algorithm to minimise the pixel-level RMSE against the 300×400 target image.
 
 ## Setup
 
 ```bash
 uv sync
-uv run python main.py
 ```
 
-## Notebook Workflow
+Then open any notebook with the project interpreter. The first cell adds the project root to `sys.path` automatically.
 
-Open `notebooks/Step_by_step_exploration.ipynb` with the project interpreter after `uv sync`. The first cell adds the project root to `sys.path`.
+## Notebooks
 
-### Running Parallel Experiments
+| Notebook | Purpose |
+|---|---|
+| `Initial_analysis.ipynb` | First look at the target image; baseline GA smoke-check |
+| `Step_by_step_exploration.ipynb` | Main analysis: systematic component evaluation (population size, elitism, selection, crossover, mutation rate, diversity methods) |
+| `Grid_search_experiment.ipynb` | Cartesian-product search over crossover, selection, and restricted mating combinations |
+| `Random_search_experiment.ipynb` | Random sampling of the same search space with early stopping |
 
-The recommended way to run experiments in the notebook is via `GAConfig` + `run_trials` / `run_grid_search`:
+## Project Structure
+
+```
+src/
+  load_image.py        — loads and resizes the target image to a NumPy array
+  population.py        — Triangle dataclass, population factories, alpha sampling
+  rendering.py         — renders a triangle list to a PIL image / NumPy array
+  ga/
+    algorithm.py       — GeneticAlgorithm: selection → crossover → mutation → elitism loop
+    fitness.py         — compute_rmse: pixel-level RMSE fitness function
+    cross_over.py      — six crossover operators (single-point, two-point, PMX, cycle; 1- and 2-child variants)
+    mutate.py          — random_triangle_mutation operator
+    selection.py       — tournament, ranking, and roulette-wheel parent selection
+    diversity.py       — FitnessSharingGA, RestrictedMatingGA, FitnessSharingRestrictedMatingGA; diversity trial runners
+    parallel.py        — GAConfig, run_trials, run_grid_search, run_variants_batch (ProcessPoolExecutor + JSON caching)
+    grid_search.py     — build_grid_setups, build_random_setups, run_one_trial, build_summary (for search notebooks)
+    plotting.py        — reusable matplotlib figures: convergence curves, bar charts, diversity panels
+    evaluation.py      — sequential, thread, and process fitness evaluation backends
+    logs.py            — GenerationLog type and builder (used by progress_callback)
+
+notebooks/
+images/
+  girl_pearl_earing.png   — 300×400 target image
+results/                  — cached JSON trial results, organised by experiment
+```
+
+## GA Components
+
+**Representation** — each individual is a list of 100 triangles. Every triangle has 9 parameters: three vertex coordinates (x, y) and an RGB colour. Alpha is fixed at 255 (fully opaque) in all experiments.
+
+**Fitness** — pixel-by-pixel RMSE between the rendered candidate and the target, normalised to [0, 1]. Lower is better.
+
+**Crossover operators** — `single_point`, `single_point_two_children`, `two_point`, `two_point_two_children`, `pmx`, `cycle`.
+
+**Mutation** — `random_triangle_mutation`: replaces each triangle's geometry or colour with a random value at a per-triangle probability.
+
+**Selection** — tournament (k=3), ranking, roulette-wheel.
+
+**Diversity methods** — fitness sharing (shared fitness via niche radius σ) and restricted mating (distance-based parent pairing). A combined variant (`FitnessSharingRestrictedMatingGA`) is evaluated in the long-run section.
+
+**Early stopping** — `ga.run(patience=N, min_delta=δ)` stops if the global best does not improve by more than δ for N consecutive generations.
+
+## Caching
+
+Every trial result is saved as a timestamped JSON file under `results/<experiment>/`. On re-run, the framework matches stored parameters against the current config (including crossover function name, mutation rate, population size, etc.) and skips any trial that already has a valid cache entry. Seeds are deterministic and derived from the full parameter dict, so re-running a cached config always produces the same result.
+
+## Running an Experiment
 
 ```python
 from src.ga.parallel import GAConfig, run_trials, run_grid_search
@@ -34,112 +74,22 @@ from src.ga import fitness, mutate, cross_over
 config = GAConfig(
     target=target_array,
     fitness_function=fitness.compute_rmse,
-    population_size=100,
-    generations=100,
+    population_size=250,
+    generations=300,
     crossover_function=cross_over.two_point_crossover_two_children,
     crossover_rate=0.9,
     mutation_function=mutate.random_triangle_mutation,
     mutation_rate=0.1,
-    elitism=1,
+    elitism=5,
     selection_type="tournament",
     triangle_alpha_range=(255, 255),
 )
 
-# Run 5 independent trials, results cached to disk
-summary = run_trials(
-    config=config,
-    n_trials=5,
-    pipeline="MyExperiment",
-    results_dir=project_root / "results" / "my_experiment",
-)
-
+# 5 independent trials, results cached to disk
+summary = run_trials(config, n_trials=5, pipeline="MyRun", results_dir=results_dir)
 print(summary.mean_fitness, summary.std_fitness)
+
+# Grid search over one parameter
+results = run_grid_search(config, grid={"mutation_rate": [0.05, 0.1, 0.2]},
+                          n_trials=5, pipeline_prefix="MutRate", results_dir=results_dir)
 ```
-
-For grid searches over a single parameter:
-
-```python
-results = run_grid_search(
-    base_config=config,
-    grid={"mutation_rate": [0.05, 0.10, 0.20]},
-    n_trials=5,
-    pipeline_prefix="MutRate",
-    results_dir=project_root / "results" / "mutation_rate",
-)
-# results is keyed by the raw parameter value, e.g. results[0.05]
-```
-
-Both functions support partial caching: if some trials already exist on disk, only the missing ones are run.
-
-### Using GeneticAlgorithm Directly
-
-For one-off runs or custom experiments, `GeneticAlgorithm` can be used directly:
-
-```python
-from src.ga import GeneticAlgorithm, fitness, mutate, cross_over
-from src import load_image
-
-target = load_image.load_target_image("images/girl_pearl_earing.png")
-
-ga = GeneticAlgorithm(
-    target=target,
-    fitness_function=fitness.compute_rmse,
-    population_size=100,
-    generations=100,
-    crossover_function=cross_over.two_point_crossover_two_children,
-    crossover_rate=0.9,
-    mutation_function=mutate.random_triangle_mutation,
-    mutation_rate=0.1,
-    elitism=1,
-    selection_type="tournament",
-    triangle_alpha_range=(255, 255),
-)
-
-best_fitness, history = ga.run()
-best_individual = ga.best_individual
-```
-
-### Triangle Transparency
-
-Control alpha range during initialization and mutation:
-
-```python
-GAConfig(
-    ...
-    triangle_alpha_range=(255, 255),  # fully opaque
-    # triangle_alpha_range=(40, 180)  # semi-transparent
-)
-```
-
-Use `(255, 255)` for fully opaque triangles (recommended for cleaner convergence). The default `(5, 255)` allows semi-transparent triangles.
-
-## Current Limitations
-
-- Notebook-first; not yet packaged as a standalone CLI experiment runner.
-- Rendering is PIL-based and is the main performance bottleneck per generation.
-- Grid search supports only single-parameter sweeps; joint parameter sweeps require manual nested loops.
-
-## File Tree
-
-- `README.md` — project overview, setup, and workflow reference.
-- `main.py` — minimal CLI smoke-check entrypoint.
-- `pyproject.toml` — project metadata and dependencies managed with `uv`.
-- `uv.lock` — locked dependency versions.
-- `images/girl_pearl_earing.png` — target image used in the notebook.
-- `notebooks/Step_by_step_exploration.ipynb` — main analysis notebook: baseline + parameter grid searches with caching and visualization.
-- `results/` — cached JSON run results, organised by experiment (`baseline/`, `elitism/`, `population_size/`, `crossover_grid/`, `mutation_rate/`).
-- `src/__init__.py` — exposes `load_image`, `population`, `rendering`.
-- `src/load_image.py` — loads and resizes target images to NumPy arrays.
-- `src/population.py` — `Triangle` dataclass, alpha sampling, random individual/population factories.
-- `src/rendering.py` — renders triangle individuals to PIL images and converts to arrays.
-- `src/ga/__init__.py` — exports `GeneticAlgorithm` and operator modules.
-- `src/ga/algorithm.py` — GA orchestration: selection, crossover, mutation, elitism, history tracking.
-- `src/ga/parallel.py` — `GAConfig`, `TrialSummary`, `run_trials`, `run_grid_search` for parallel cached experiments.
-- `src/ga/results.py` — saves and loads per-run JSON result files; `runs_dataframe()` for pandas summaries.
-- `src/ga/fitness.py` — `compute_rmse` fitness function.
-- `src/ga/cross_over.py` — crossover operators: single-point, two-point, one-child and two-children variants.
-- `src/ga/mutate.py` — `random_triangle_mutation` operator.
-- `src/ga/selection.py` — tournament, ranking, and roulette-wheel parent selection.
-- `src/ga/evaluation.py` — sequential, thread, and process fitness evaluation backends.
-- `src/ga/logs.py` — per-generation and run-level log formatting.
-- `tests/` — unit and smoke tests for initialization, selection, crossover, imports.
