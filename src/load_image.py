@@ -33,7 +33,7 @@ def load_target_image(path: str) -> np.ndarray:
     # Open the image and normalize it to plain RGB (no alpha, no greyscale)
     image = Image.open(path).convert("RGB")
 
-    # Fix the canvas size so every experiment runs on identical pixel grids. The original image size is 300×400.
+    # Fix the canvas size so every experiment runs on identical pixel grids
     image = image.resize((300, 400))
 
     return np.array(image)

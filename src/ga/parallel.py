@@ -85,6 +85,22 @@ def save_run(
     notes: str = "",
     results_dir: Path | str = Path("results"),
 ) -> Path:
+    """
+    Saves one GA trial result to a timestamped JSON file.
+
+    Args:
+        pipeline:         Experiment label used as a filename prefix and cache key.
+        parameters:       Dict of GA parameters to store alongside the result.
+        best_fitness:     Final RMSE of the best individual found.
+        history:          Per-generation best-RMSE list.
+        best_individual:  List of Triangle objects that achieved best_fitness.
+        runtime_seconds:  Wall-clock seconds the trial took.
+        notes:            Optional free-text annotation (e.g. trial index).
+        results_dir:      Directory to write the JSON file into (created if needed).
+
+    Returns:
+        Path to the written JSON file.
+    """
     results_dir = Path(results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S-%f")
@@ -109,6 +125,20 @@ def save_run(
 
 
 def load_all_runs(results_dir: Path | str) -> list[dict]:
+    """
+    Loads all saved trial JSONs from a directory and returns them as a list.
+
+    Each returned dict includes all fields from the saved JSON plus an
+    ``individual`` key that is already deserialized back to Triangle objects.
+    Files that cannot be parsed are silently skipped.
+
+    Args:
+        results_dir: Directory to scan for ``*.json`` files.
+
+    Returns:
+        List of run dicts sorted by filename (oldest first).
+        Returns an empty list if the directory does not exist.
+    """
     results_dir = Path(results_dir)
     if not results_dir.exists():
         return []
@@ -625,9 +655,8 @@ def run_variants_batch(
     Run N trials for each variant, submitting all missing trials to a single
     shared ``ProcessPoolExecutor`` — the same pattern as ``run_grid_search``.
 
-    All
-    CPU cores stay busy for the full duration instead of being idle while the
-    next variant's pool starts up.
+    All CPU cores stay busy for the full duration instead of being idle while
+    the next variant's pool starts up.
 
     Args:
         config:      Base GA configuration shared by all variants.
