@@ -433,8 +433,7 @@ def run_single_ga(config: GAConfig) -> dict:
         elitism=config.elitism,
         selection_type=config.selection_type,
         triangle_alpha_range=config.triangle_alpha_range,
-        evaluation_backend="sequential",  # no nested pools
-        progress=False,                   # no per-generation noise from workers
+        evaluation_backend="sequential",
     )
 
     t0 = time.perf_counter()
@@ -466,7 +465,7 @@ def run_single_ga_variant(config: GAConfig, ga_class_name: str, extra_kwargs: di
     Args:
         config:        Fully populated GAConfig for this specific trial.
         ga_class_name: One of ``"GeneticAlgorithm"``, ``"FitnessSharingGA"``,
-                       ``"RestrictedMatingGA"``.
+                       ``"RestrictedMatingGA"``, ``"FitnessSharingRestrictedMatingGA"``.
         extra_kwargs:  Subclass-specific keyword arguments (e.g.
                        ``{"sigma_share": 0.3, "n_bins": 8}``).
 
@@ -490,7 +489,6 @@ def run_single_ga_variant(config: GAConfig, ga_class_name: str, extra_kwargs: di
         selection_type=config.selection_type,
         triangle_alpha_range=config.triangle_alpha_range,
         evaluation_backend="sequential",
-        progress=False,
         **extra_kwargs,
     )
 

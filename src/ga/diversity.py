@@ -388,7 +388,6 @@ def _run_diversity_worker(
         **{**base_dict, **extra_kwargs},
         progress_callback=_make_diversity_callback(log, _ref, W, H, pheno_interval, pheno_scale),
         evaluation_backend="sequential",
-        progress=False,
     )
     _ref[0] = ga
     ga.run()

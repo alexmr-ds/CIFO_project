@@ -176,7 +176,6 @@ class GeneticAlgorithm:
         mutation_rate: float | None = None,
         elitism: int = 0,
         selection_type: str = "tournament",
-        logs: bool = False,
         crossover_function: CrossoverFunction | None = None,
         mutation_function: MutationFunction | None = None,
         evaluation_backend: EvaluationBackend = "sequential",
@@ -188,8 +187,6 @@ class GeneticAlgorithm:
         n_triangles: int = population.N_TRIANGLES,
         initial_population: list[Individual] | None = None,
         seeded: bool = False,
-        progress: bool = False,
-        progress_interval: int = 1,
         progress_callback: ProgressCallback | None = None,
     ) -> None:
         """
@@ -208,7 +205,6 @@ class GeneticAlgorithm:
                                   the next generation (0 = no elitism).
             selection_type:       Parent selection strategy: "tournament",
                                   "ranking", or "roulette".
-            logs:                 If True, populate run_logs after run() finishes.
             crossover_function:   Operator: (p1, p2, rate) → child or children.
             mutation_function:    Operator: (individual, rate, w, h, alpha) → individual.
             evaluation_backend:   "sequential", "thread", or "process".
@@ -220,8 +216,6 @@ class GeneticAlgorithm:
                                   Useful for warm-starting from a prior run.
             seeded:               If True, initialise triangle colours by sampling
                                   random pixels from the target image.
-            progress:             Print a one-line summary after each generation.
-            progress_interval:    Print every N-th generation (default 1 = every gen).
             progress_callback:    Optional callable receiving each GenerationLog.
 
         Raises:
@@ -239,8 +233,6 @@ class GeneticAlgorithm:
             raise ValueError("elitism must be between 0 and population_size.")
         if n_triangles <= 0:
             raise ValueError("n_triangles must be greater than zero.")
-        if progress_interval <= 0:
-            raise ValueError("progress_interval must be greater than zero.")
         if progress_callback is not None and not callable(progress_callback):
             raise ValueError("progress_callback must be callable when provided.")
 
@@ -272,7 +264,6 @@ class GeneticAlgorithm:
 
         self.elitism = elitism
         self.selection_type = selection.normalize_selection_type(selection_type)
-        self.logs = logs
         self.evaluation_backend = normalized_backend
         self.n_jobs = n_jobs
         self.chunksize = chunksize
@@ -285,8 +276,6 @@ class GeneticAlgorithm:
             n_triangles=n_triangles,
         )
         self.seeded = seeded
-        self.progress = progress
-        self.progress_interval = progress_interval
         self.progress_callback = progress_callback
 
         self.image_height, self.image_width = self.target.shape[:2]
@@ -296,7 +285,6 @@ class GeneticAlgorithm:
         self.best_individual: Individual | None = None
         self.best_fitness = float("inf")
         self.history: list[float] = []
-        self.run_logs: logs.RunLogs = {}
 
     # -----------------------------------------------------------------------
     # Public lifecycle methods
@@ -347,7 +335,6 @@ class GeneticAlgorithm:
         self.best_individual = None
         self.best_fitness = float("inf")
         self.history = []
-        self.run_logs = {}
 
     def evaluate(self) -> list[float]:
         """
@@ -510,76 +497,38 @@ class GeneticAlgorithm:
         return mutated_individual, changed_triangles
 
     def _emit_progress(self, generation_log: logs.GenerationLog) -> None:
-        """Fire progress_callback and optionally print a generation summary."""
-
-        # Always fire the callback if one was registered, regardless of interval
         if self.progress_callback is not None:
             self.progress_callback(generation_log)
-
-        # Only print if progress output is enabled
-        if not self.progress:
-            return
-
-        # Respect the interval — only print every N-th generation
-        if generation_log["generation"] % self.progress_interval != 0:
-            return
-
-        # 1-indexed generation number for human-readable output
-        generation_index = generation_log["generation"] + 1
-        print(
-            f"[GA] gen {generation_index}/{self.generations} | "
-            f"best={generation_log['global_best_fitness']:.6f} | "
-            f"gen_best={generation_log['generation_best_fitness']:.6f} | "
-            f"mut_rate={generation_log['mutation_rate_used']:.4f} | "
-            f"mutated_offspring={generation_log['mutated_offspring']} | "
-            f"mutated_triangles={generation_log['mutated_triangles']}"
-        )
 
     # -----------------------------------------------------------------------
     # Main entry point
     # -----------------------------------------------------------------------
 
-    def run(self) -> tuple[float, list[float]]:
+    def run(
+        self,
+        patience: int | None = None,
+        min_delta: float = 0.0,
+    ) -> tuple[float, list[float]]:
         """
-        Runs the full GA and returns the best fitness and convergence history.
+        Runs the GA and returns the best fitness and convergence history.
 
-        Execution flow:
-          1. initialize() — create generation-0 population, reset state.
-          2. Optionally open a long-lived evaluation executor.
-          3. For each generation:
-             a. Evaluate the current population.
-             b. Record and update the adaptive mutation rate.
-             c. Apply elitism (copy best N individuals to next generation).
-             d. Inject random immigrants if configured.
-             e. Fill the rest of the next generation via selection, crossover,
-                and mutation until population_size is reached.
-             f. Log and emit progress.
-          4. Shut down the executor.
-          5. If logging is enabled, assemble run_logs.
-          6. Return (best_fitness, history).
+        Args:
+            patience:  Stop early if the global best does not improve by more
+                       than min_delta for this many consecutive generations.
+                       None (default) disables early stopping.
+            min_delta: Minimum absolute improvement in RMSE that counts as
+                       progress. Only used when patience is set.
 
         After run() returns:
           - ``ga.best_individual`` holds the best triangle list found.
           - ``ga.history`` holds the global best RMSE after each generation.
-          - ``ga.run_logs`` holds detailed per-generation telemetry (if logs=True).
-
-        Returns:
-            (best_fitness, history):
-              best_fitness — lowest RMSE achieved across all generations.
-              history      — list of global-best RMSE values, one per generation.
-
-        Raises:
-            RuntimeError: If the algorithm completes without a best individual
-                          (should never happen under normal operation).
         """
 
         self.initialize()
 
-        # Open the executor once at the start of the run so it is reused
-        # across all generations (avoiding repeated pool startup overhead).
-        # For the sequential backend, executor stays None.
         executor: evaluation.Executor | None = None
-        generation_logs: list[logs.GenerationLog] = []
+        stale = 0
+        best_at_last_check = float(self.best_fitness)
 
         try:
             if self.evaluation_backend != "sequential":
@@ -599,18 +548,26 @@ class GeneticAlgorithm:
                     time.perf_counter() - evaluation_started
                 )
 
-                ranked_indices           = np.argsort(fitness_values)
+                ranked_indices          = np.argsort(fitness_values)
                 generation_best_fitness = float(fitness_values[int(ranked_indices[0])])
                 global_best_fitness     = float(self.best_fitness)
 
                 self.history.append(global_best_fitness)
 
-                offspring_created = 0
-                mutated_offspring = 0
-                mutated_triangles = 0
+                if patience is not None:
+                    if best_at_last_check - global_best_fitness > min_delta:
+                        best_at_last_check = global_best_fitness
+                        stale = 0
+                    else:
+                        stale += 1
+                    if stale >= patience:
+                        break
 
-                if generation != self.generations - 1:
-
+                is_last = generation == self.generations - 1
+                offspring_created   = 0
+                mutated_offspring   = 0
+                mutated_triangles   = 0
+                if not is_last:
                     next_population = [
                         copy.deepcopy(self.population[int(index)])
                         for index in ranked_indices[: self.elitism]
@@ -623,34 +580,30 @@ class GeneticAlgorithm:
                         for child in children:
                             if len(next_population) >= self.population_size:
                                 break
-                            child, changed_triangles = self.mutate(child)
-                            offspring_created += 1
-                            mutated_triangles += changed_triangles
-                            if changed_triangles > 0:
-                                mutated_offspring += 1
+                            child, changed = self.mutate(child)
                             next_population.append(child)
+                            offspring_created += 1
+                            if changed > 0:
+                                mutated_offspring += 1
+                                mutated_triangles += changed
 
                     self.population = next_population[: self.population_size]
 
-                generation_log = logs.create_generation_log(
-                    generation=generation,
-                    generation_best_fitness=generation_best_fitness,
-                    generation_mean_fitness=float(np.mean(fitness_values)),
-                    global_best_fitness=global_best_fitness,
-                    evaluation_backend=self.evaluation_backend,
-                    n_jobs=self.n_jobs,
-                    chunksize=self.chunksize,
-                    evaluation_duration_seconds=evaluation_duration_seconds,
-                    mutation_rate_used=float(self.mutation_rate),
-                    offspring_created=offspring_created,
-                    mutated_offspring=mutated_offspring,
-                    mutated_triangles=mutated_triangles,
-                )
-
-                if self.logs:
-                    generation_logs.append(generation_log)
-
-                self._emit_progress(generation_log)
+                if self.progress_callback is not None:
+                    self._emit_progress(logs.create_generation_log(
+                        generation=generation,
+                        generation_best_fitness=generation_best_fitness,
+                        generation_mean_fitness=float(np.mean(fitness_values)),
+                        global_best_fitness=global_best_fitness,
+                        evaluation_backend=self.evaluation_backend,
+                        n_jobs=self.n_jobs,
+                        chunksize=self.chunksize,
+                        evaluation_duration_seconds=evaluation_duration_seconds,
+                        mutation_rate_used=float(self.mutation_rate),
+                        offspring_created=offspring_created,
+                        mutated_offspring=mutated_offspring,
+                        mutated_triangles=mutated_triangles,
+                    ))
 
         finally:
             if executor is not None:
@@ -659,13 +612,6 @@ class GeneticAlgorithm:
         if self.best_individual is None:
             raise RuntimeError(
                 "The genetic algorithm did not produce a best individual."
-            )
-
-        if self.logs:
-            self.run_logs = logs.create_run_logs(
-                generation_logs,
-                float(self.best_fitness),
-                self.best_individual,
             )
 
         return float(self.best_fitness), list(self.history)
