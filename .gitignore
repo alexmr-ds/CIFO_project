@@ -26,9 +26,7 @@ dist/
 outputs/
 artifacts/
 results/**/*.json
-results/**/*.csv
 !results/grid_search/best_config.json
-results/*.csv
 **/AGENTS.md
 *.log
 .env
