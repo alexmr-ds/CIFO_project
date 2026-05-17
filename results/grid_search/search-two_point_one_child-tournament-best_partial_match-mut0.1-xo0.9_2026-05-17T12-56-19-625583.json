@@ -1,0 +1,30 @@
+{
+  "pipeline": "search-two_point_one_child-tournament-best_partial_match-mut0.1-xo0.9",
+  "timestamp": "2026-05-17T12:56:19.625603",
+  "parameters": {
+    "trial_id": 1,
+    "mutation_rate": 0.1,
+    "crossover_rate": 0.9,
+    "crossover_type": "two_point_one_child",
+    "selection_type": "tournament",
+    "restricted_mating": "best_partial_match",
+    "population_size": 250,
+    "generations": 500,
+    "elitism": 5,
+    "sigma_share": 0.3,
+    "n_bins": 8,
+    "candidate_pool": 5,
+    "triangle_alpha_range": [
+      255,
+      255
+    ]
+  },
+  "results": {
+    "seed": 1066960894,
+    "final_best_fitness": 0.3112996518611908,
+    "best_generation": 3,
+    "generations_run": 8,
+    "stopped_early": true,
+    "runtime_seconds": 6.042068791008205
+  }
+}

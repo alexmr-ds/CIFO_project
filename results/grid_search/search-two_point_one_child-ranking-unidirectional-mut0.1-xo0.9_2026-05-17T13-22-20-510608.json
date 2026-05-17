@@ -1,0 +1,30 @@
+{
+  "pipeline": "search-two_point_one_child-ranking-unidirectional-mut0.1-xo0.9",
+  "timestamp": "2026-05-17T13:22:20.510632",
+  "parameters": {
+    "trial_id": 2,
+    "mutation_rate": 0.1,
+    "crossover_rate": 0.9,
+    "crossover_type": "two_point_one_child",
+    "selection_type": "ranking",
+    "restricted_mating": "unidirectional",
+    "population_size": 250,
+    "generations": 500,
+    "elitism": 5,
+    "sigma_share": 0.3,
+    "n_bins": 8,
+    "candidate_pool": 5,
+    "triangle_alpha_range": [
+      255,
+      255
+    ]
+  },
+  "results": {
+    "seed": 963435149,
+    "final_best_fitness": 0.26277634501457214,
+    "best_generation": 86,
+    "generations_run": 87,
+    "stopped_early": true,
+    "runtime_seconds": 72.51176125000347
+  }
+}

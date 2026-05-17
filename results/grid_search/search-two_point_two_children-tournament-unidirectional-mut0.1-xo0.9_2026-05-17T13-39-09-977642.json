@@ -1,0 +1,30 @@
+{
+  "pipeline": "search-two_point_two_children-tournament-unidirectional-mut0.1-xo0.9",
+  "timestamp": "2026-05-17T13:39:09.977666",
+  "parameters": {
+    "trial_id": 4,
+    "mutation_rate": 0.1,
+    "crossover_rate": 0.9,
+    "crossover_type": "two_point_two_children",
+    "selection_type": "tournament",
+    "restricted_mating": "unidirectional",
+    "population_size": 250,
+    "generations": 500,
+    "elitism": 5,
+    "sigma_share": 0.3,
+    "n_bins": 8,
+    "candidate_pool": 5,
+    "triangle_alpha_range": [
+      255,
+      255
+    ]
+  },
+  "results": {
+    "seed": 743529604,
+    "final_best_fitness": 0.25939521193504333,
+    "best_generation": 95,
+    "generations_run": 106,
+    "stopped_early": true,
+    "runtime_seconds": 80.04649408301339
+  }
+}

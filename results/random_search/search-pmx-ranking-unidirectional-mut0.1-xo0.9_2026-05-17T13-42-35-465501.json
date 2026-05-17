@@ -1,0 +1,30 @@
+{
+  "pipeline": "search-pmx-ranking-unidirectional-mut0.1-xo0.9",
+  "timestamp": "2026-05-17T13:42:35.465536",
+  "parameters": {
+    "trial_id": 1,
+    "mutation_rate": 0.1,
+    "crossover_rate": 0.9,
+    "crossover_type": "pmx",
+    "selection_type": "ranking",
+    "restricted_mating": "unidirectional",
+    "population_size": 250,
+    "generations": 500,
+    "elitism": 5,
+    "sigma_share": 0.3,
+    "n_bins": 8,
+    "candidate_pool": 5,
+    "triangle_alpha_range": [
+      255,
+      255
+    ]
+  },
+  "results": {
+    "seed": 392323786,
+    "final_best_fitness": 0.22957924008369446,
+    "best_generation": 135,
+    "generations_run": 140,
+    "stopped_early": true,
+    "runtime_seconds": 109.4972385000001
+  }
+}

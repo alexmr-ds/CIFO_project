@@ -1,0 +1,30 @@
+{
+  "pipeline": "search-pmx-tournament-unidirectional-mut0.1-xo0.9",
+  "timestamp": "2026-05-17T12:51:48.013010",
+  "parameters": {
+    "trial_id": 2,
+    "mutation_rate": 0.1,
+    "crossover_rate": 0.9,
+    "crossover_type": "pmx",
+    "selection_type": "tournament",
+    "restricted_mating": "unidirectional",
+    "population_size": 250,
+    "generations": 500,
+    "elitism": 5,
+    "sigma_share": 0.3,
+    "n_bins": 8,
+    "candidate_pool": 5,
+    "triangle_alpha_range": [
+      255,
+      255
+    ]
+  },
+  "results": {
+    "seed": 1528071641,
+    "final_best_fitness": 0.2519948482513428,
+    "best_generation": 20,
+    "generations_run": 25,
+    "stopped_early": true,
+    "runtime_seconds": 18.49651083300705
+  }
+}
