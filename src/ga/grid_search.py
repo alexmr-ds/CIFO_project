@@ -149,6 +149,9 @@ RESULT_COLUMNS = [
     "crossover_type",
     "selection_type",
     "restricted_mating",
+    "evaluation_backend",
+    "n_jobs",
+    "chunksize",
     "final_best_fitness",
     "best_generation",
     "generations_run",
@@ -161,6 +164,35 @@ DEFAULT_CROSSOVER_FUNCTIONS = {
     "two_point_two_children": cross_over.two_point_crossover_two_children,
     "pmx": cross_over.pmx_crossover,
 }
+
+
+def _resolve_trial_rate(
+    rate_name: str,
+    setup: Mapping[str, Any] | pd.Series,
+    fixed_params: Mapping[str, Any],
+) -> float:
+    """Return a trial rate from fixed params, falling back to legacy setup rows."""
+
+    fixed_value = fixed_params.get(rate_name)
+    if fixed_value is not None and not pd.isna(fixed_value):
+        return float(fixed_value)
+
+    setup_value = setup.get(rate_name)
+    if setup_value is not None and not pd.isna(setup_value):
+        return float(setup_value)
+
+    raise ValueError(
+        f"{rate_name} must be provided in fixed_params or the grid setup."
+    )
+
+
+def _result_columns_with_defaults(df: pd.DataFrame) -> pd.DataFrame:
+    """Return raw results with current columns and backward-compatible defaults."""
+
+    df = df.reindex(columns=RESULT_COLUMNS)
+    df["evaluation_backend"] = df["evaluation_backend"].fillna("sequential")
+    df["stopped_early"] = df["stopped_early"].fillna(False)
+    return df
 
 
 def build_full_search_space(search_space: Mapping[str, list[Any]]) -> pd.DataFrame:
@@ -198,7 +230,7 @@ def load_raw_results(raw_results_path: Path | str) -> pd.DataFrame:
         return pd.DataFrame(columns=RESULT_COLUMNS)
 
     df = pd.read_csv(raw_results_path)
-    df = df.reindex(columns=RESULT_COLUMNS)
+    df = _result_columns_with_defaults(df)
     df = df.drop_duplicates(subset=["setup_id", "trial_id"], keep="last")
     return df.sort_values(["setup_id", "trial_id"]).reset_index(drop=True)
 
@@ -208,7 +240,7 @@ def save_raw_results(df: pd.DataFrame, raw_results_path: Path | str) -> None:
 
     raw_results_path = Path(raw_results_path)
     raw_results_path.parent.mkdir(parents=True, exist_ok=True)
-    ordered = df.reindex(columns=RESULT_COLUMNS)
+    ordered = _result_columns_with_defaults(df)
     ordered = ordered.sort_values(["setup_id", "trial_id"]).reset_index(drop=True)
     ordered.to_csv(raw_results_path, index=False)
 
@@ -223,6 +255,9 @@ def build_summary(raw_results: pd.DataFrame) -> pd.DataFrame:
         "crossover_type",
         "selection_type",
         "restricted_mating",
+        "evaluation_backend",
+        "n_jobs",
+        "chunksize",
         "mean_final_best_fitness",
         "std_final_best_fitness",
         "min_final_best_fitness",
@@ -235,7 +270,7 @@ def build_summary(raw_results: pd.DataFrame) -> pd.DataFrame:
     if raw_results.empty:
         return pd.DataFrame(columns=summary_columns)
 
-    raw_results = raw_results.reindex(columns=RESULT_COLUMNS)
+    raw_results = _result_columns_with_defaults(raw_results)
 
     grouping_columns = [
         "setup_id",
@@ -244,9 +279,12 @@ def build_summary(raw_results: pd.DataFrame) -> pd.DataFrame:
         "crossover_type",
         "selection_type",
         "restricted_mating",
+        "evaluation_backend",
+        "n_jobs",
+        "chunksize",
     ]
     summary = (
-        raw_results.groupby(grouping_columns, as_index=False)
+        raw_results.groupby(grouping_columns, as_index=False, dropna=False)
         .agg(
             mean_final_best_fitness=("final_best_fitness", "mean"),
             std_final_best_fitness=("final_best_fitness", "std"),
@@ -286,6 +324,15 @@ def run_one_trial(
     fitness_function = fitness_function or fitness.compute_rmse
     mutation_function = mutation_function or mutate.random_triangle_mutation
     crossover_functions = crossover_functions or DEFAULT_CROSSOVER_FUNCTIONS
+    evaluation_backend = evaluation.normalize_evaluation_backend(
+        fixed_params.get("evaluation_backend", "sequential")
+    )
+    n_jobs = fixed_params.get("n_jobs")
+    chunksize = fixed_params.get("chunksize")
+    mutation_rate = _resolve_trial_rate("mutation_rate", setup, fixed_params)
+    crossover_rate = _resolve_trial_rate("crossover_rate", setup, fixed_params)
+    evaluation.validate_optional_positive_int(n_jobs, "n_jobs")
+    evaluation.validate_optional_positive_int(chunksize, "chunksize")
 
     setup_id = int(setup["setup_id"])
     seed = base_seed + setup_id * 100 + int(trial_id)
@@ -297,9 +344,9 @@ def run_one_trial(
         population_size=fixed_params["population_size"],
         generations=fixed_params["generations"],
         crossover_function=crossover_functions[setup["crossover_type"]],
-        crossover_rate=float(setup["crossover_rate"]),
+        crossover_rate=crossover_rate,
         mutation_function=mutation_function,
-        mutation_rate=float(setup["mutation_rate"]),
+        mutation_rate=mutation_rate,
         elitism=fixed_params["elitism"],
         selection_type=setup["selection_type"],
         triangle_alpha_range=fixed_params["triangle_alpha_range"],
@@ -307,7 +354,9 @@ def run_one_trial(
         n_bins=fixed_params["n_bins"],
         mating_type=setup["restricted_mating"],
         candidate_pool=fixed_params["candidate_pool"],
-        evaluation_backend="sequential",
+        evaluation_backend=evaluation_backend,
+        n_jobs=n_jobs,
+        chunksize=chunksize,
         progress=False,
     )
 
@@ -325,11 +374,14 @@ def run_one_trial(
         "setup_id": setup_id,
         "trial_id": int(trial_id),
         "seed": seed,
-        "mutation_rate": float(setup["mutation_rate"]),
-        "crossover_rate": float(setup["crossover_rate"]),
+        "mutation_rate": mutation_rate,
+        "crossover_rate": crossover_rate,
         "crossover_type": setup["crossover_type"],
         "selection_type": setup["selection_type"],
         "restricted_mating": setup["restricted_mating"],
+        "evaluation_backend": evaluation_backend,
+        "n_jobs": n_jobs,
+        "chunksize": chunksize,
         "final_best_fitness": float(final_best_fitness),
         "best_generation": first_best_generation(history, final_best_fitness),
         "generations_run": generations_run,

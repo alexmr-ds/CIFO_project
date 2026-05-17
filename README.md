@@ -24,7 +24,7 @@ uv run python main.py
 
 Open `notebooks/Step_by_step_exploration.ipynb` with the project interpreter after `uv sync`. The first cell adds the project root to `sys.path`.
 
-Use `notebooks/Grid_search_experiment.ipynb` for the guarded grid-search experiment across all configured hyperparameter setups. It keeps fitness sharing active, varies restricted mating and other GA operators, applies grid-search-only early stopping with patience 5, saves raw trial results to `results/grid_search_raw_results.csv`, and writes the aggregated setup summary to `results/grid_search_summary.csv`.
+Use `notebooks/Grid_search_experiment.ipynb` for the guarded grid-search experiment across all configured hyperparameter setups. It keeps fitness sharing active, varies restricted mating and other GA operators, applies grid-search-only early stopping with notebook-configured patience, supports configurable GA evaluation backends, saves raw trial results to `results/grid_search/grid_search_raw_results.csv`, writes the aggregated setup summary to `results/grid_search/grid_search_summary.csv`, and exports the current best setup to `results/grid_search/best_config.json`.
 
 ### Running Parallel Experiments
 
@@ -109,19 +109,19 @@ Control alpha range during initialization and mutation:
 ```python
 GAConfig(
     ...
-    triangle_alpha_range=(255, 255),  # fully opaque
+    triangle_alpha_range=(5, 255),  # default range with some transparency
     # triangle_alpha_range=(40, 180)  # semi-transparent
 )
 ```
 
-Use `(255, 255)` for fully opaque triangles (recommended for cleaner convergence). The default `(5, 255)` allows semi-transparent triangles.
+Use `(5, 255)` as the default-safe range. Use `(255, 255)` only if you want fully opaque triangles.
 
 ### Additional Workflows
 
 - Use `fitness.make_rmse_structure_fitness(...)` when you need a picklable weighted RMSE + structure loss for process-based evaluation.
 - Use `run_staged_triangle_optimization(...)` for coarse-to-fine triangle-count schedules.
 - Use `FitnessSharingGA` or `RestrictedMatingGA` when you want diversity-preserving selection pressure instead of the baseline GA.
-- Grid-search raw CSV rows include `generations_run` and `stopped_early`; summaries include `mean_generations_run` and `stopped_early_trials`.
+- Grid-search raw CSV rows include `evaluation_backend`, `n_jobs`, `chunksize`, `generations_run`, and `stopped_early`; summaries include backend metadata, `mean_generations_run`, and `stopped_early_trials`.
 
 ## Current Limitations
 
@@ -141,7 +141,7 @@ Use `(255, 255)` for fully opaque triangles (recommended for cleaner convergence
 - `notebooks/Exploration.ipynb` — additional notebook experimentation and analysis.
 - `notebooks/Step_by_step_exploration.ipynb` — main experiment notebook with cached sweeps and visualizations.
 - `notebooks/Grid_search_experiment.ipynb` — guarded sequential grid-search notebook with resumable CSV output.
-- `results/` — cached experiment outputs plus `.gitkeep`; current subdirectories include runs such as `baseline/`, `crossover_grid/`, `elitism/`, `fitness_sharing/`, `mutation_rate/`, and `population_size/`.
+- `results/` — cached experiment outputs plus `.gitkeep`; current subdirectories include runs such as `baseline/`, `crossover_grid/`, `elitism/`, `fitness_sharing/`, `grid_search/`, `mutation_rate/`, and `population_size/`.
 - `src/__init__.py` — exposes the top-level package modules used from notebooks.
 - `src/load_image.py` — loads and resizes target images to NumPy arrays.
 - `src/population.py` — triangle datatypes plus random and seeded population factories.

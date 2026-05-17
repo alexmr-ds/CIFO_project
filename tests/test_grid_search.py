@@ -74,8 +74,6 @@ class GridSearchTests(TestCase):
 
         self.setup = {
             "setup_id": 1,
-            "mutation_rate": 0.1,
-            "crossover_rate": 0.9,
             "crossover_type": "two_point_one_child",
             "selection_type": "tournament",
             "restricted_mating": "best_partial_match",
@@ -85,6 +83,8 @@ class GridSearchTests(TestCase):
             "population_size": 2,
             "generations": 5,
             "triangle_alpha_range": (255, 255),
+            "mutation_rate": 0.1,
+            "crossover_rate": 0.9,
             "sigma_share": 0.3,
             "n_bins": 8,
             "candidate_pool": 5,
@@ -107,10 +107,79 @@ class GridSearchTests(TestCase):
 
         mock_ga.run.assert_called_once_with()
         mock_ga.run_with_early_stopping.assert_not_called()
+        constructor_kwargs = ga_class.call_args.kwargs
+        self.assertEqual("sequential", constructor_kwargs["evaluation_backend"])
+        self.assertIsNone(constructor_kwargs["n_jobs"])
+        self.assertIsNone(constructor_kwargs["chunksize"])
+        self.assertEqual(0.1, constructor_kwargs["mutation_rate"])
+        self.assertEqual(0.9, constructor_kwargs["crossover_rate"])
         self.assertEqual(174, result["seed"])
+        self.assertEqual("sequential", result["evaluation_backend"])
+        self.assertIsNone(result["n_jobs"])
+        self.assertIsNone(result["chunksize"])
+        self.assertEqual(0.1, result["mutation_rate"])
+        self.assertEqual(0.9, result["crossover_rate"])
         self.assertEqual(5, result["generations_run"])
         self.assertFalse(result["stopped_early"])
         self.assertEqual(3, result["best_generation"])
+
+    def test_run_one_trial_forwards_configured_evaluation_backend(self) -> None:
+        """Configured backend settings are passed through to the GA."""
+
+        fixed_params = {
+            **self.fixed_params,
+            "evaluation_backend": "process",
+            "n_jobs": 4,
+            "chunksize": 2,
+        }
+        with patch("src.ga.grid_search.FitnessSharingRestrictedMatingGA") as ga_class:
+            mock_ga = ga_class.return_value
+            mock_ga.run.return_value = (0.2, [0.5, 0.2, 0.2, 0.2, 0.2])
+
+            result = grid_search.run_one_trial(
+                setup=self.setup,
+                trial_id=1,
+                target_array=self.target,
+                fixed_params=fixed_params,
+            )
+
+        constructor_kwargs = ga_class.call_args.kwargs
+        self.assertEqual("process", constructor_kwargs["evaluation_backend"])
+        self.assertEqual(4, constructor_kwargs["n_jobs"])
+        self.assertEqual(2, constructor_kwargs["chunksize"])
+        self.assertEqual("process", result["evaluation_backend"])
+        self.assertEqual(4, result["n_jobs"])
+        self.assertEqual(2, result["chunksize"])
+
+    def test_run_one_trial_falls_back_to_legacy_setup_rates(self) -> None:
+        """Legacy setup-provided rates still work when fixed params omit them."""
+
+        setup = {
+            **self.setup,
+            "mutation_rate": 0.2,
+            "crossover_rate": 0.8,
+        }
+        fixed_params = {
+            key: value
+            for key, value in self.fixed_params.items()
+            if key not in {"mutation_rate", "crossover_rate"}
+        }
+        with patch("src.ga.grid_search.FitnessSharingRestrictedMatingGA") as ga_class:
+            mock_ga = ga_class.return_value
+            mock_ga.run.return_value = (0.2, [0.5, 0.2, 0.2, 0.2, 0.2])
+
+            result = grid_search.run_one_trial(
+                setup=setup,
+                trial_id=1,
+                target_array=self.target,
+                fixed_params=fixed_params,
+            )
+
+        constructor_kwargs = ga_class.call_args.kwargs
+        self.assertEqual(0.2, constructor_kwargs["mutation_rate"])
+        self.assertEqual(0.8, constructor_kwargs["crossover_rate"])
+        self.assertEqual(0.2, result["mutation_rate"])
+        self.assertEqual(0.8, result["crossover_rate"])
 
     def test_run_one_trial_uses_early_stopping_when_patience_is_set(self) -> None:
         """An early-stopped trial records short generation count and flag."""
@@ -145,6 +214,26 @@ class GridSearchTests(TestCase):
                 target_array=self.target,
                 fixed_params=self.fixed_params,
                 early_stopping_patience=0,
+            )
+
+    def test_run_one_trial_requires_rates_from_fixed_params_or_setup(self) -> None:
+        """Missing rates from both supported sources fail clearly."""
+
+        fixed_params = {
+            key: value
+            for key, value in self.fixed_params.items()
+            if key not in {"mutation_rate", "crossover_rate"}
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "mutation_rate must be provided in fixed_params or the grid setup.",
+        ):
+            grid_search.run_one_trial(
+                setup=self.setup,
+                trial_id=1,
+                target_array=self.target,
+                fixed_params=fixed_params,
             )
 
     def test_run_with_early_stopping_uses_strict_improvement_patience(self) -> None:
@@ -197,6 +286,64 @@ class GridSearchTests(TestCase):
 
         summary = grid_search.build_summary(raw_results)
 
+        self.assertEqual("sequential", summary.loc[0, "evaluation_backend"])
         self.assertEqual(4.0, summary.loc[0, "mean_generations_run"])
         self.assertEqual(1, summary.loc[0, "stopped_early_trials"])
         self.assertEqual(2, summary.loc[0, "completed_trials"])
+
+    def test_build_summary_groups_backend_settings_separately(self) -> None:
+        """Summary rows keep backend configurations distinct."""
+
+        raw_results = pd.DataFrame(
+            [
+                {
+                    "setup_id": 1,
+                    "trial_id": 1,
+                    "seed": 174,
+                    "mutation_rate": 0.1,
+                    "crossover_rate": 0.9,
+                    "crossover_type": "two_point_one_child",
+                    "selection_type": "tournament",
+                    "restricted_mating": "best_partial_match",
+                    "evaluation_backend": "sequential",
+                    "n_jobs": None,
+                    "chunksize": None,
+                    "final_best_fitness": 0.3,
+                    "best_generation": 2,
+                    "generations_run": 3,
+                    "stopped_early": True,
+                    "runtime_seconds": 1.0,
+                },
+                {
+                    "setup_id": 1,
+                    "trial_id": 2,
+                    "seed": 175,
+                    "mutation_rate": 0.1,
+                    "crossover_rate": 0.9,
+                    "crossover_type": "two_point_one_child",
+                    "selection_type": "tournament",
+                    "restricted_mating": "best_partial_match",
+                    "evaluation_backend": "process",
+                    "n_jobs": 4,
+                    "chunksize": 2,
+                    "final_best_fitness": 0.2,
+                    "best_generation": 5,
+                    "generations_run": 5,
+                    "stopped_early": False,
+                    "runtime_seconds": 2.0,
+                },
+            ]
+        )
+
+        summary = grid_search.build_summary(raw_results).sort_values(
+            "evaluation_backend"
+        )
+
+        self.assertEqual(
+            ["process", "sequential"],
+            summary["evaluation_backend"].tolist(),
+        )
+        self.assertEqual(4.0, summary.iloc[0]["n_jobs"])
+        self.assertEqual(2.0, summary.iloc[0]["chunksize"])
+        self.assertTrue(pd.isna(summary.iloc[1]["n_jobs"]))
+        self.assertTrue(pd.isna(summary.iloc[1]["chunksize"]))
